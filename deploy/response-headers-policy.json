@@ -1,0 +1,25 @@
+{
+  "Name": "codys-mtg-security-headers",
+  "Comment": "Security headers for mtg.cody-roof.com",
+  "SecurityHeadersConfig": {
+    "ContentSecurityPolicy": {
+      "Override": true,
+      "ContentSecurityPolicy": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self' https://api.scryfall.com wss:; img-src 'self' data: https://cards.scryfall.io https://svgs.scryfall.io; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'"
+    },
+    "StrictTransportSecurity": {
+      "Override": true,
+      "AccessControlMaxAgeSec": 63072000,
+      "IncludeSubdomains": false,
+      "Preload": false
+    },
+    "ContentTypeOptions": { "Override": true },
+    "ReferrerPolicy": { "Override": true, "ReferrerPolicy": "no-referrer" },
+    "FrameOptions": { "Override": true, "FrameOption": "DENY" }
+  },
+  "CustomHeadersConfig": {
+    "Quantity": 1,
+    "Items": [
+      { "Header": "Permissions-Policy", "Value": "camera=(self), microphone=(), geolocation=()", "Override": true }
+    ]
+  }
+}
