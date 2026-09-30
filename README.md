@@ -87,7 +87,8 @@ src/
 public/                Service worker, web manifest, icon (and generated OCR files in ocr/)
 scripts/               Build helpers (OCR file copy)
 tests/                 Unit tests for the pure modules
-deploy/                Deploy script and CloudFront security headers
+deploy/                Deploy script, CloudFormation stack, and CloudFront security headers
+.github/workflows/     Deploys to AWS on every push to master
 ```
 
 ## How sync works
@@ -112,11 +113,15 @@ deploy/                Deploy script and CloudFront security headers
 
 The build is static files, hosted on AWS: a private S3 bucket behind CloudFront (Origin Access Control) with an ACM certificate for `mtg.cody-roof.com`. Any HTTPS static host works. Hash routing means no rewrite rules are needed.
 
+The AWS resources are defined in `deploy/infra.yml` (CloudFormation stack `mtg-collection` in us-east-2): the bucket, the distribution with the security headers policy, the Route 53 records, and an IAM role that GitHub Actions assumes through OIDC. Only pushes to `master` of this repo can use the role, and it can only write to the bucket and invalidate the distribution.
+
+Every push to `master` runs `.github/workflows/deploy.yml`, which tests, builds, and deploys. It needs three repository secrets: `AWS_ROLE_ARN`, `MTG_BUCKET`, and `MTG_DISTRIBUTION_ID` (the stack outputs `DeployRoleArn`, `BucketName`, and `DistributionId`). To deploy by hand instead:
+
 ```sh
 MTG_BUCKET=<bucket> MTG_DISTRIBUTION_ID=<distribution id> npm run deploy
 ```
 
-The script builds and uploads hashed assets and the versioned OCR files with a one-year immutable cache. It uploads `index.html`, `sw.js`, and the manifest with `no-cache`, and invalidates those on CloudFront. Attach `deploy/response-headers-policy.json` to the distribution as a Response Headers Policy (CSP, HSTS, `nosniff`, `no-referrer`, camera allowed for this site only).
+The script builds and uploads hashed assets and the versioned OCR files with a one-year immutable cache. It uploads `index.html`, `sw.js`, and the manifest with `no-cache`, and invalidates those on CloudFront. The headers policy (CSP, HSTS, `nosniff`, `no-referrer`, camera allowed for this site only) is in both `deploy/infra.yml` and `deploy/response-headers-policy.json`; keep them in sync.
 
 Hosting the site on its own subdomain keeps its storage, service worker, and CSP separate from any other site on the domain.
 
