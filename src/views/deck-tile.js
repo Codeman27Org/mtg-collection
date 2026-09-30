@@ -1,7 +1,7 @@
 import { h } from '../dom.js';
 import { cardImage, primaryType } from '../card-utils.js';
 import { colorPips } from '../mana.js';
-import { deckStats, ownership } from '../analytics.js';
+import { deckStats, legalityIssues, ownership } from '../analytics.js';
 import { FORMAT_LABELS } from '../constants.js';
 import { usd } from '../util.js';
 
@@ -48,6 +48,18 @@ export function deckTile(deck, cards, ownedByOracle, plan) {
   const art = cardImage(cover, 'art_crop');
   const { missing } = ownership(deck, cards, ownedByOracle, new Map());
   const missingCount = missing.reduce((n, m) => n + m.qty, 0);
+  const issues = legalityIssues(deck, cards);
+  const legality = issues.length
+    ? h(
+        'span',
+        {
+          class: 'chip chip-warn',
+          title: issues.length > 8 ? [...issues.slice(0, 8), `…and ${issues.length - 8} more`].join('\n') : issues.join('\n'),
+          'aria-label': `Not legal: ${issues.join(' ')}`,
+        },
+        '⚠ Not legal',
+      )
+    : null;
   const status = plan
     ? assemblyStatus(plan) === 'assembled'
       ? h('span', { class: 'chip chip-ok', title: 'Every card is in this deck’s location' }, '✓ Assembled')
@@ -70,7 +82,12 @@ export function deckTile(deck, cards, ownedByOracle, plan) {
       'div',
       { class: 'deck-meta' },
       h('h3', {}, deck.name),
-      h('div', { class: 'row between' }, h('span', { class: 'pill' }, FORMAT_LABELS[deck.format]), colorPips(stats.identity)),
+      h(
+        'div',
+        { class: 'row between' },
+        h('span', { class: 'row wrap' }, h('span', { class: 'pill' }, FORMAT_LABELS[deck.format]), legality),
+        colorPips(stats.identity),
+      ),
       h(
         'div',
         { class: 'muted small' },
