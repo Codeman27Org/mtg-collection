@@ -18,7 +18,8 @@ Parameters:
     Default: arn:aws:acm:us-east-1:481403182090:certificate/769382bc-3fb5-44a0-8232-7451c35a231f
   GitHubRepo:
     Type: String
-    Default: Codeman27Org/mtg-collection
+    Description: owner@ownerId/repo@repoId, matching GitHub's immutable OIDC subject for this repo
+    Default: Codeman27Org@232694080/mtg-collection@1398440280
   GitHubBranch:
     Type: String
     Default: master
