@@ -231,3 +231,15 @@ export async function sets() {
   await setPref('sets', { fetchedAt: Date.now(), data: slim });
   return slim;
 }
+
+let iconMemo = null;
+/** Map of set code → set symbol URL (Scryfall's SVG host only). */
+export function setIcons() {
+  iconMemo ??= sets()
+    .then((list) => new Map(list.filter((s) => s.icon_svg_uri?.startsWith('https://svgs.scryfall.io/')).map((s) => [s.code, s.icon_svg_uri])))
+    .catch(() => {
+      iconMemo = null;
+      return new Map();
+    });
+  return iconMemo;
+}

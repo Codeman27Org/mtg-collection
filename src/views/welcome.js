@@ -91,18 +91,18 @@ export default async function welcomeView(root, { query }) {
   const next = nextPath(query);
   // Accounts saved before the passphrase was removed only have an encrypted key.
   const legacy = (await account.listAccounts()).some((a) => a.ncryptsec && !a.nsec);
-  const panel = h('div', { class: 'panel' });
-  const tabs = h(
-    'div',
-    { class: 'tabs', role: 'tablist' },
-    h('button', { type: 'button', role: 'tab', class: `tab${legacy ? '' : ' active'}`, onclick: (e) => show(e, createPanel) }, 'Create Account'),
-    h('button', { type: 'button', role: 'tab', class: `tab${legacy ? ' active' : ''}`, onclick: (e) => show(e, loginPanel) }, 'Log In'),
-  );
-  function show(e, make) {
-    for (const t of tabs.children) t.classList.toggle('active', t === e?.currentTarget);
-    panel.replaceChildren(make(next));
+  const panel = h('div', { class: 'panel stack' });
+  const switchLink = (text, label, show) =>
+    h('p', { class: 'muted auth-switch' }, text, ' ', h('button', { type: 'button', class: 'link-btn', onclick: show }, label));
+
+  function showLogin() {
+    panel.replaceChildren(h('h2', {}, 'Log in'), loginPanel(next), switchLink('New here?', 'Create an account', showCreate));
+    panel.querySelector('input[type="password"]')?.focus();
   }
-  panel.replaceChildren(legacy ? loginPanel(next) : createPanel(next));
+  function showCreate() {
+    panel.replaceChildren(h('h2', {}, 'Create an account'), createPanel(next), switchLink('Already have a key?', 'Log in', showLogin));
+  }
+  showLogin();
   root.append(
     h(
       'section',
@@ -110,7 +110,6 @@ export default async function welcomeView(root, { query }) {
       h('h1', {}, APP_NAME),
       h('p', { class: 'lead' }, 'Your Magic collection and decks, synced across devices with Nostr. Your key is your account.'),
       legacy ? h('div', { class: 'banner banner-warn' }, 'The device passphrase is gone. Log in with your nsec once and this device will remember it.') : null,
-      tabs,
       panel,
     ),
   );

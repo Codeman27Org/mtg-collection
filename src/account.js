@@ -51,7 +51,7 @@ export async function login(sk, { remember }) {
   const db = await sharedDB();
   const existing = await db.get('accounts', pubkey);
   await db.put('accounts', { pubkey, nsec: remember ? nip19.nsecEncode(sk) : null, lastUsedAt: Date.now() });
-  start(pubkey, sk, { isNew: !existing });
+  start(pubkey, sk, { isNew: !existing, loggedIn: true });
   return pubkey;
 }
 

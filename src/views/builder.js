@@ -5,7 +5,7 @@ import * as collection from '../collection.js';
 import * as decks from '../decks.js';
 import * as scryfall from '../scryfall.js';
 import * as shares from '../shares.js';
-import { context, addCard, cardImg } from '../cardui.js';
+import { context, addCard, cardImg, openCardModal } from '../cardui.js';
 import { cardPrice, manaCostOf } from '../card-utils.js';
 import { manaCost } from '../mana.js';
 import { navigate } from '../router.js';
@@ -249,6 +249,8 @@ export default async function builderView(root, { params: [id], query }) {
     let pressTimer;
     let longPressed = false;
     const pick = () => countPicker(card, (n) => add(card, n).catch((err) => toast(err.message, 'error')));
+    // Collection results are a printing you own; search results need the set chosen first.
+    const fromCollection = source === 'collection';
     const owned = ownedByOracle.get(card.oracle_id) ?? 0;
     // usageByOracle counts this deck too, so "free" is what's left for it to take.
     const free = owned - (usageByOracle.get(card.oracle_id) ?? 0);
@@ -268,9 +270,12 @@ export default async function builderView(root, { params: [id], query }) {
           type: 'button',
           class: 'result-row',
           disabled: !editable,
-          title: 'Click to add 1. Right-click or long-press to choose how many.',
+          title: fromCollection
+            ? 'Click to add 1. Right-click or long-press to choose how many.'
+            : 'Click to pick a printing and add it. Right-click or long-press to add this printing quickly.',
           onclick: action(() => {
             if (longPressed) return (longPressed = false);
+            if (!fromCollection) return openCardModal(card, { deckId: deck.id, section: addSection });
             return add(card);
           }),
           oncontextmenu: (e) => {

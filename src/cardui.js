@@ -127,13 +127,53 @@ async function wherePanel(card, rerender) {
 
 let addLocation = '';
 
-async function actionsPanel(card, rerender) {
+async function actionsPanel(card, rerender, { deckId: forDeck, section: forSection, onAdded } = {}) {
   if (!account.canEdit()) return h('p', { class: 'muted' }, 'Unlock your account to add this card.');
   const deckList = await decks.list();
-  let deckId = context.deckId && deckList.some((d) => d.id === context.deckId) ? context.deckId : deckList[0]?.id;
-  let section = 'main';
+  const preferred = forDeck ?? context.deckId;
+  let deckId = preferred && deckList.some((d) => d.id === preferred) ? preferred : deckList[0]?.id;
+  let section = forSection ?? 'main';
   const picker = await locationPicker(addLocation, { label: 'Add to location', onChange: (v) => (addLocation = v) });
   const target = async () => (addLocation = await picker.value());
+  // Pull cards only moves copies you own that aren't already in a deck (any printing counts).
+  let spare = Infinity;
+  let status = null;
+  if (forDeck) {
+    const owned = (await collection.ownedByOracle()).get(card.oracle_id) ?? 0;
+    spare = owned - ((await decks.usageByOracle()).get(card.oracle_id) ?? 0);
+    const deckName = () => deckList.find((d) => d.id === deckId)?.name ?? 'the deck';
+    const mainFinish = !card.finishes?.length || card.finishes.includes('nonfoil') ? 'nonfoil' : card.finishes[0];
+    const foil = mainFinish === 'nonfoil' && card.finishes?.includes('foil') ? h('input', { type: 'checkbox' }) : null;
+    const addBoth = action(async () => {
+      const finish = foil?.checked ? 'foil' : mainFinish;
+      await addCard({ target: 'collection', scryfallId: card.id, finish, location: await target() });
+      await addCard({ target: { deckId }, scryfallId: card.id, section });
+      toast(`Added ${card.name} (${card.set.toUpperCase()}${finish === 'nonfoil' ? '' : `, ${finish}`}) to your collection and ${deckName()}`);
+      onAdded?.();
+    });
+    status =
+      spare > 0
+        ? h('p', { class: 'ok-text small' }, `✓ You have ${spare} spare ${spare === 1 ? 'copy' : 'copies'} in your collection, so Pull cards can move one into the deck.`)
+        : h(
+            'div',
+            { class: 'banner banner-warn add-callout' },
+            h('strong', {}, owned ? 'No spare copy in your collection' : 'Not in your collection yet'),
+            h(
+              'p',
+              { class: 'small' },
+              owned ? `You own ${owned}, but ${owned === 1 ? 'it’s' : 'they’re all'} already used by ${owned === 1 ? 'a deck' : 'your decks'}. ` : 'You don’t own this card. ',
+              'Pull cards can only move cards from your collection, so add this printing to your collection to pull it into the deck.',
+            ),
+            h(
+              'div',
+              { class: 'row wrap' },
+              foil ? h('label', { class: 'check' }, foil, ' Foil') : null,
+              h('span', { class: 'small' }, 'Store it in'),
+              picker.el,
+            ),
+            h('div', { class: 'row wrap' }, h('button', { class: 'btn btn-primary', type: 'button', onclick: addBoth }, 'Add to collection + deck')),
+          );
+  }
   const collectionBtns = h(
     'div',
     { class: 'row wrap' },
@@ -159,7 +199,7 @@ async function actionsPanel(card, rerender) {
       '−1',
     ),
     h('span', { class: 'muted small' }, 'in'),
-    picker.el,
+    spare > 0 ? picker.el : null,
   );
   const deckRow = deckList.length
     ? h(
@@ -171,30 +211,96 @@ async function actionsPanel(card, rerender) {
         h(
           'button',
           {
-            class: 'btn btn-primary',
+            class: `btn${spare > 0 ? ' btn-primary' : ''}`,
             type: 'button',
             onclick: action(async () => {
               await addCard({ target: { deckId }, scryfallId: card.id, section });
-              toast(`Added ${card.name}`);
+              toast(`Added ${card.name} (${card.set.toUpperCase()})`);
+              onAdded?.();
             }),
           },
-          'Add',
+          !forDeck ? 'Add' : spare > 0 ? 'Add this printing' : 'Add to deck only',
         ),
       )
     : h('p', { class: 'muted' }, 'Create a deck to add cards to it.');
-  return h('div', { class: 'stack' }, collectionBtns, deckRow);
+  return h('div', { class: 'stack' }, status, spare > 0 ? collectionBtns : null, deckRow);
 }
 
-export async function openCardModal(input) {
+const setIcon = (icons, code) => {
+  const src = icons?.get(code);
+  return src ? h('img', { class: 'set-icon set-icon-sm', src, alt: '', width: 18, height: 18 }) : null;
+};
+
+/**
+ * opts.deckId: opened from a deck's search to add a card; preselects that deck and opts.section,
+ * lists printings right away so the set can be picked, and closes after adding.
+ */
+export async function openCardModal(input, opts = {}) {
   let card = typeof input === 'string' ? await scryfall.getCard(input) : input;
   if (!card) return toast('Card not found.', 'error');
   let face = 0;
+  let printings = null;
+  let printingsFailed = false;
+  let icons = null;
+  let ownedById = new Map();
   const dlg = modal({ title: card.name, content: loading(), wide: true });
+  const actionOpts = opts.deckId ? { ...opts, onAdded: () => dlg.dismiss() } : {};
+  icons = await scryfall.setIcons();
+
+  async function loadPrintings() {
+    const paper = await scryfall.paperPrints(card.oracle_id);
+    // Digital-only cards have no paper printings; show those rather than nothing.
+    printings = paper.length ? paper : await scryfall.prints(card.oracle_id);
+    if (account.current()) ownedById = await collection.ownedById();
+    // Printings you own first (stable, so newest-first order holds within each group).
+    if (opts.deckId) printings.sort((a, b) => Number(!!ownedById.get(b.id)?.total) - Number(!!ownedById.get(a.id)?.total));
+  }
+
+  function printingList() {
+    return h(
+      'ul',
+      { class: 'printing-list' },
+      printings.map((p) => {
+        const own = ownedById.get(p.id)?.total;
+        return h(
+          'li',
+          {},
+          h(
+            'button',
+            {
+              class: `printing${p.id === card.id ? ' active' : ''}`,
+              type: 'button',
+              'aria-pressed': String(p.id === card.id),
+              onclick: () => {
+                card = p;
+                face = 0;
+                render();
+              },
+            },
+            setIcon(icons, p.set),
+            h('span', { class: 'printing-set' }, p.set_name),
+            h('span', { class: 'muted small' }, `${p.set.toUpperCase()} #${p.collector_number}`),
+            own ? h('span', { class: 'owned-badge inline' }, `Own ${own}`) : null,
+            h('span', { class: 'price small' }, usd(cardPrice(p))),
+          ),
+        );
+      }),
+    );
+  }
 
   async function render() {
     const faces = card.card_faces?.length ? card.card_faces : [card];
     const link = scryfallLink(card);
-    const printingsBox = h('div', { class: 'printings' });
+    const listScroll = dlg.querySelector('.printing-list')?.scrollTop ?? 0;
+    const printingsBox = h(
+      'div',
+      { class: 'printings' },
+      printings
+        ? [h('h4', {}, opts.deckId ? 'Pick a printing' : 'Printings'), printingList()]
+        : opts.deckId && !printingsFailed
+          ? loading('Loading printings…')
+          : null,
+    );
     const content = h(
       'div',
       { class: 'card-detail' },
@@ -221,51 +327,48 @@ export async function openCardModal(input) {
             f.flavor_text ? h('p', { class: 'flavor' }, f.flavor_text) : null,
           ),
         ),
-        h('p', { class: 'muted' }, `${card.set_name} (${card.set.toUpperCase()}) · #${card.collector_number} · ${card.rarity}`),
+        h('p', { class: 'muted row' }, setIcon(icons, card.set), `${card.set_name} (${card.set.toUpperCase()}) · #${card.collector_number} · ${card.rarity}`),
         h('p', {}, `Price: ${usd(cardPrice(card, 'nonfoil'))} · Foil ${usd(cardPrice(card, 'foil'))}`),
-        account.current() ? await ownedPanel(card, render) : null,
-        account.current() ? await actionsPanel(card, render) : null,
+        account.current() && !opts.deckId ? await ownedPanel(card, render) : null,
+        printingsBox,
+        account.current() ? await actionsPanel(card, render, actionOpts) : null,
+        account.current() && opts.deckId ? await ownedPanel(card, render) : null,
         h(
           'div',
           { class: 'row wrap' },
           link ? h('a', { class: 'btn', href: link, target: '_blank', rel: 'noopener noreferrer' }, 'View on Scryfall') : null,
-          h(
-            'button',
-            {
-              class: 'btn',
-              type: 'button',
-              onclick: action(async () => {
-                printingsBox.replaceChildren(loading('Loading printings…'));
-                const list = await scryfall.prints(card.oracle_id);
-                printingsBox.replaceChildren(
-                  h(
-                    'ul',
-                    { class: 'printing-list' },
-                    list.map((p) =>
-                      h(
-                        'li',
-                        {},
-                        h(
-                          'button',
-                          { class: `link-btn${p.id === card.id ? ' active' : ''}`, type: 'button', onclick: () => { card = p; face = 0; render(); } },
-                          `${p.set_name} (${p.set.toUpperCase()}) #${p.collector_number}`,
-                        ),
-                        h('span', { class: 'muted' }, ` ${usd(cardPrice(p))}`),
-                      ),
-                    ),
-                  ),
-                );
-              }),
-            },
-            'Printings',
-          ),
+          printings
+            ? null
+            : h(
+                'button',
+                {
+                  class: 'btn',
+                  type: 'button',
+                  onclick: action(async () => {
+                    printingsBox.replaceChildren(loading('Loading printings…'));
+                    await loadPrintings();
+                    await render();
+                  }),
+                },
+                'Printings',
+              ),
         ),
-        printingsBox,
         h('h4', {}, 'Legality'),
         legalityTable(card),
       ),
     );
     dlg.setBody(content);
+    const list = dlg.querySelector('.printing-list');
+    if (list) list.scrollTop = listScroll;
+  }
+  if (opts.deckId) {
+    await render();
+    try {
+      await loadPrintings();
+    } catch (err) {
+      printingsFailed = true;
+      toast(err.message, 'error');
+    }
   }
   await render();
 }

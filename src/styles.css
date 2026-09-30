@@ -475,6 +475,15 @@ fieldset {
   background: color-mix(in srgb, var(--danger) 15%, transparent);
   border: 1px solid var(--danger);
 }
+.add-callout {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 0;
+}
+.add-callout p {
+  margin: 0;
+}
 
 .loading {
   display: flex;
@@ -1044,10 +1053,50 @@ fieldset {
   color: var(--text-2);
 }
 .printing-list {
-  max-height: 200px;
+  max-height: 280px;
   overflow-y: auto;
-  padding-left: 18px;
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.printing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
   font-size: 0.875rem;
+  text-align: left;
+  cursor: pointer;
+}
+.printing-list li:last-child .printing {
+  border-bottom: none;
+}
+.printing:hover {
+  background: var(--bg-2);
+}
+.printing.active {
+  background: var(--bg-2);
+  box-shadow: inset 3px 0 0 var(--accent);
+  font-weight: 600;
+}
+.printing-set {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.set-icon.set-icon-sm {
+  width: 18px;
+  height: 18px;
+  flex: none;
 }
 
 /* ---------------------------------------------------------------- decks */

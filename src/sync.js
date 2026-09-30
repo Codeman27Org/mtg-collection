@@ -550,13 +550,13 @@ export async function syncNow() {
   await pull();
 }
 
-export function start() {
+export function start({ pullNow = false } = {}) {
   stop();
   if (!account.canEdit()) return setState({ status: 'locked' });
   running = true;
-  // Reloads (and the dev server's hot reloads) shouldn't each trigger a full pull and repair.
+  // Reloads (and the dev server's hot reloads) shouldn't each trigger a full pull and repair; logging in always pulls.
   lastPullAt = Number(localStorage.getItem(lastPullKey())) || 0;
-  if (Date.now() - lastPullAt > 60_000) pull();
+  if (pullNow || Date.now() - lastPullAt > 60_000) pull();
   else refreshPending().then(() => state.pending && scheduleFlush());
   pullTimer = setInterval(pull, PULL_EVERY_MS);
 }
@@ -584,7 +584,7 @@ if (typeof document !== 'undefined') {
   addEventListener('online', () => running && pull());
 }
 
-on('account', ({ pubkey, unlocked }) => (pubkey && unlocked ? start() : stop()));
+on('account', ({ pubkey, unlocked, loggedIn }) => (pubkey && unlocked ? start({ pullNow: loggedIn }) : stop()));
 
 if (typeof window !== 'undefined') {
   window.addEventListener('online', () => account.canEdit() && pull());
