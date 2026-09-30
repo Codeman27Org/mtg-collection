@@ -7,7 +7,7 @@ import * as locations from '../locations.js';
 import * as scryfall from '../scryfall.js';
 import * as sync from '../sync.js';
 import { summarize } from '../collection-stats.js';
-import { lockedBanner, loading, emptyState, firstSyncNotice } from '../components.js';
+import { lockedBanner, loading, emptyState, firstSyncNotice, cardDataLoading, loadError } from '../components.js';
 import { deckTile, newDeckTile } from './deck-tile.js';
 import { collectionDashboard } from './dashboard.js';
 import { deckPlan } from '../location-logic.js';
@@ -43,7 +43,29 @@ async function latestReleases(ownedBySet) {
 export default async function homeView(root) {
   // Phase of the first-sync panel currently shown, or null when showing the normal page.
   let shownPhase = null;
-  async function render() {
+  // Several events arrive together after a sync; draw once at a time and once more at the end.
+  let drawing = null;
+  let redraw = false;
+  function render() {
+    if (drawing) {
+      redraw = true;
+      return drawing;
+    }
+    drawing = draw()
+      .catch((err) => {
+        console.error('home failed to load', err);
+        root.replaceChildren(loadError(err, render));
+      })
+      .finally(() => {
+        drawing = null;
+        if (redraw) {
+          redraw = false;
+          render();
+        }
+      });
+    return drawing;
+  }
+  async function draw() {
     root.replaceChildren(loading());
     const entries = await collection.entries();
     const deckList = await decks.list();
@@ -54,7 +76,9 @@ export default async function homeView(root) {
       return;
     }
     shownPhase = null;
-    const cards = await scryfall.getCards([...entries.map((e) => e.scryfallId), ...deckList.flatMap(decks.activeIds)]);
+    const cards = await scryfall.getCards([...entries.map((e) => e.scryfallId), ...deckList.flatMap(decks.activeIds)], {
+      onProgress: (done, total, paused) => root.replaceChildren(cardDataLoading(done, total, paused)),
+    });
     const ownedByOracle = await collection.ownedByOracle();
     const usedOracles = new Set(deckList.flatMap(decks.activeIds).map((id) => cards.get(id)?.oracle_id).filter(Boolean));
     const sum = summarize(entries, cards, usedOracles);

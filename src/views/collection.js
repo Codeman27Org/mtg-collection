@@ -4,7 +4,7 @@ import * as account from '../account.js';
 import * as collection from '../collection.js';
 import * as decks from '../decks.js';
 import { getCards } from '../scryfall.js';
-import { lockedBanner, loading, emptyState, firstSyncNotice, action, toast } from '../components.js';
+import { lockedBanner, loading, emptyState, firstSyncNotice, cardDataLoading, loadError, action, toast } from '../components.js';
 import { navigate } from '../router.js';
 import * as sync from '../sync.js';
 import { collectionBrowser, browserState } from './collection-browser.js';
@@ -96,9 +96,15 @@ export default async function collectionView(root, { query } = {}) {
     return on('collection', () => navigate('/collection'));
   }
 
-  let cards = await collection.cardsFor(entries, {
-    onProgress: (done, total) => body.replaceChildren(loading(`Loading card data… ${done}/${total}`)),
-  });
+  let cards;
+  try {
+    cards = await collection.cardsFor(entries, {
+      onProgress: (done, total, paused) => body.replaceChildren(cardDataLoading(done, total, paused)),
+    });
+  } catch (err) {
+    body.replaceChildren(loadError(err, () => navigate('/collection')));
+    return;
+  }
   browser = collectionBrowser({
     state,
     readOnly: !account.canEdit(),

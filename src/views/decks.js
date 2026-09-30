@@ -4,7 +4,7 @@ import * as account from '../account.js';
 import * as collection from '../collection.js';
 import * as decks from '../decks.js';
 import { getCards } from '../scryfall.js';
-import { lockedBanner, loading, emptyState, dropdown, firstSyncNotice } from '../components.js';
+import { lockedBanner, loading, emptyState, dropdown, firstSyncNotice, cardDataLoading, loadError } from '../components.js';
 import { deckTile, assemblyStatus } from './deck-tile.js';
 import { deckPlan } from '../location-logic.js';
 import { deckStats } from '../analytics.js';
@@ -36,7 +36,28 @@ export default async function decksView(root) {
   );
 
   let shownPhase = null;
-  async function render() {
+  let drawing = null;
+  let redraw = false;
+  function render() {
+    if (drawing) {
+      redraw = true;
+      return drawing;
+    }
+    drawing = draw()
+      .catch((err) => {
+        console.error('decks failed to load', err);
+        body.replaceChildren(loadError(err, render));
+      })
+      .finally(() => {
+        drawing = null;
+        if (redraw) {
+          redraw = false;
+          render();
+        }
+      });
+    return drawing;
+  }
+  async function draw() {
     const list = await decks.list();
     if (!list.length && sync.firstPullPending()) {
       const fp = sync.getState().firstPull;
@@ -52,7 +73,9 @@ export default async function decksView(root) {
       return;
     }
     const entries = await collection.entries();
-    const cards = await getCards([...list.flatMap(decks.activeIds), ...entries.map((e) => e.scryfallId)]);
+    const cards = await getCards([...list.flatMap(decks.activeIds), ...entries.map((e) => e.scryfallId)], {
+      onProgress: (done, total, paused) => body.replaceChildren(cardDataLoading(done, total, paused)),
+    });
     const owned = await collection.ownedByOracle();
     const items = list.map((deck) => {
       const plan = deckPlan(deck, cards, entries);

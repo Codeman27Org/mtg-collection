@@ -209,6 +209,25 @@ export function emptyState(title, ...children) {
   return h('div', { class: 'empty' }, h('h3', {}, title), ...children);
 }
 
+/** Progress text for downloading card data from Scryfall. */
+export function cardDataLoading(done, total, paused) {
+  return loading(
+    paused
+      ? `Scryfall asked us to slow down. Continuing in about 30 seconds… (${done}/${total})`
+      : `Loading card data… ${done}/${total}`,
+  );
+}
+
+/** A failed load with a way to try again, instead of a spinner that never ends. */
+export function loadError(err, retry) {
+  return h(
+    'div',
+    { class: 'banner banner-error stack' },
+    h('p', {}, `Couldn’t load this page: ${err.message}`),
+    h('div', {}, h('button', { class: 'btn', type: 'button', onclick: action(retry) }, 'Try again')),
+  );
+}
+
 /** Shown in place of "nothing here yet" while this device first checks relays for the account's data. */
 export function firstSyncNotice(firstPull, retry) {
   if (firstPull?.phase === 'failed') {

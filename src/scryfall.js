@@ -13,7 +13,8 @@ let lastRequest = 0;
 /** Serializes every Scryfall request and spaces them per Scryfall's published rate limits. */
 function request(path, { method = 'GET', body } = {}) {
   const run = async () => {
-    const wait = lastRequest + (SLOW.test(path) ? 500 : 100) - Date.now();
+    // A margin over Scryfall's 500 ms / 100 ms limits, since network jitter can bunch requests together.
+    const wait = lastRequest + (SLOW.test(path) ? 600 : 120) - Date.now();
     if (wait > 0) await sleep(wait);
     lastRequest = Date.now();
     let res;
@@ -26,11 +27,11 @@ function request(path, { method = 'GET', body } = {}) {
     } catch {
       // Scryfall's 429 responses carry no CORS headers, so the browser reports them as network errors.
       lastRequest = Date.now() + PENALTY_MS;
-      throw new Error('Couldn’t reach Scryfall (offline or rate-limited). Try again in 30 seconds.');
+      throw Object.assign(new Error('Couldn’t reach Scryfall (offline or rate-limited). Try again in 30 seconds.'), { rateLimited: navigator.onLine });
     }
     if (res.status === 429) {
       lastRequest = Date.now() + PENALTY_MS;
-      throw new Error('Scryfall rate limit hit; please wait 30 seconds and try again.');
+      throw Object.assign(new Error('Scryfall rate limit hit; please wait 30 seconds and try again.'), { rateLimited: true });
     }
     const data = await res.json();
     return { status: res.status, data };
@@ -116,21 +117,38 @@ export async function allCachedCards() {
 /**
  * Batch lookup via POST /cards/collection (75 per request).
  * identifiers: [{id} | {set, collector_number} | {name, set?}]
+ * onProgress(done, total, paused): paused is true while waiting out a Scryfall rate limit.
  */
 export async function fetchCollection(identifiers, onProgress) {
   const found = [];
   const notFound = [];
   for (let i = 0; i < identifiers.length; i += 75) {
     const chunk = identifiers.slice(i, i + 75);
-    const { status, data } = await request('/cards/collection', { method: 'POST', body: { identifiers: chunk } });
+    let res;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        res = await request('/cards/collection', { method: 'POST', body: { identifiers: chunk } });
+        break;
+      } catch (err) {
+        // request() already holds the queue for Scryfall's 30 s penalty, so retrying just waits it out.
+        if (!err.rateLimited || attempt >= 2) throw err;
+        onProgress?.(i, identifiers.length, true);
+      }
+    }
+    const { status, data } = res;
     if (status !== 200) throw new Error(data?.details ?? `Scryfall error ${status}`);
-    found.push(...data.data.map(trim));
+    const cards = data.data.map(trim);
+    // Saved per batch so a later failure doesn't throw away what already arrived.
+    await storeCards(cards);
+    found.push(...cards);
     notFound.push(...(data.not_found ?? []));
-    onProgress?.(Math.min(i + 75, identifiers.length), identifiers.length);
+    onProgress?.(Math.min(i + 75, identifiers.length), identifiers.length, false);
   }
-  await storeCards(found);
   return { found, notFound };
 }
+
+// id → Promise<card | undefined> for lookups already on their way, so parallel callers share one request.
+const inflight = new Map();
 
 /** Returns a Map of id → card, fetching anything missing (or stale, if refresh is set). */
 export async function getCards(ids, { refresh = false, onProgress } = {}) {
@@ -138,13 +156,20 @@ export async function getCards(ids, { refresh = false, onProgress } = {}) {
   const cached = await getCachedCards(unique);
   const cutoff = Date.now() - PRICE_TTL;
   const missing = unique.filter((id) => !cached.has(id) || (refresh && cached.get(id).fetchedAt < cutoff));
-  if (missing.length) {
-    const { found } = await fetchCollection(
-      missing.map((id) => ({ id })),
+  const toFetch = missing.filter((id) => !inflight.has(id));
+  if (toFetch.length) {
+    const batch = fetchCollection(
+      toFetch.map((id) => ({ id })),
       onProgress,
+    ).then(({ found }) => new Map(found.map((c) => [c.id, c])));
+    for (const id of toFetch) inflight.set(id, batch.then((m) => m.get(id)));
+    batch.then(
+      () => toFetch.forEach((id) => inflight.delete(id)),
+      () => toFetch.forEach((id) => inflight.delete(id)),
     );
-    for (const card of found) cached.set(card.id, card);
   }
+  const fetched = await Promise.all(missing.map((id) => inflight.get(id)));
+  for (const card of fetched) if (card) cached.set(card.id, card);
   return cached;
 }
 
