@@ -16,6 +16,8 @@ export const shortNpub = (pubkey) => {
 };
 export const nsec = (sk) => nip19.nsecEncode(sk);
 export const pubkeyOf = (sk) => getPublicKey(sk);
+// The key sits after '#', which browsers never send to the server.
+export const loginLink = (sk) => `${location.origin}/#/welcome?key=${nip19.nsecEncode(sk)}`;
 
 export function newSecretKey() {
   return generateSecretKey();

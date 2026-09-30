@@ -88,6 +88,9 @@ function loginPanel(next) {
 }
 
 export default async function welcomeView(root, { query }) {
+  // A device-login link carries the key; drop it from the address bar and history right away.
+  const linkKey = query.get('key');
+  if (linkKey) history.replaceState(null, '', '#/welcome');
   const next = nextPath(query);
   // Accounts saved before the passphrase was removed only have an encrypted key.
   const legacy = (await account.listAccounts()).some((a) => a.ncryptsec && !a.nsec);
@@ -102,7 +105,45 @@ export default async function welcomeView(root, { query }) {
   function showCreate() {
     panel.replaceChildren(h('h2', {}, 'Create an account'), createPanel(next), switchLink('Already have a key?', 'Log in', showLogin));
   }
-  showLogin();
+  // Asks before logging in, so a link from someone else can't silently put you in their account.
+  function showLinkLogin(sk) {
+    const pubkey = account.pubkeyOf(sk);
+    const rem = rememberField();
+    panel.replaceChildren(
+      h('h2', {}, 'Log in to this device'),
+      h(
+        'form',
+        {
+          class: 'stack',
+          onsubmit: action(async (e) => {
+            e.preventDefault();
+            await account.login(sk, rem.read());
+            toast('Logged in. Pulling your data from relays…');
+            navigate(next);
+          }),
+        },
+        h('p', {}, 'You scanned a login code for this account:'),
+        h('code', { class: 'mono' }, account.shortNpub(pubkey)),
+        h('p', { class: 'muted small' }, 'Check this matches the npub in Settings on your other device.'),
+        rem.el,
+        h('button', { class: 'btn btn-primary', type: 'submit' }, 'Log In'),
+      ),
+      switchLink('Not your account?', 'Log in with a different key', showLogin),
+    );
+    panel.querySelector('button[type="submit"]')?.focus();
+  }
+
+  let linkSk = null;
+  if (linkKey) {
+    try {
+      linkSk = account.parseSecret(linkKey);
+    } catch {
+      toast('That login link is damaged. Log in with your key instead.', 'error');
+    }
+  }
+  if (linkSk && account.current() === account.pubkeyOf(linkSk)) return navigate(next);
+  if (linkSk) showLinkLogin(linkSk);
+  else showLogin();
   root.append(
     h(
       'section',

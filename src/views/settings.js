@@ -33,10 +33,10 @@ async function accountSection() {
   const reveal = (withQr) =>
     action(async () => {
       secretBox.replaceChildren(
-        h('p', { class: 'warn-text small' }, 'Anyone with this key can edit your collection and decks.'),
+        h('p', { class: 'warn-text small' }, withQr ? 'Anyone who scans this code or has this key can edit your collection and decks.' : 'Anyone with this key can edit your collection and decks.'),
+        withQr ? h('p', {}, 'Scan this with the other device’s camera to open the site and log in. Or choose Log In there and paste the key below.') : null,
+        withQr ? await qrImage(account.loginLink(account.secretKey()), 'QR code that logs another device into this account') : null,
         h('code', { class: 'secret' }, nsec),
-        withQr ? h('p', {}, 'On the other device, choose Log In and paste this key, or scan the QR code.') : null,
-        withQr ? await qrImage(nsec, 'QR code of your nsec') : null,
         h(
           'div',
           { class: 'row' },
