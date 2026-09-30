@@ -16,4 +16,4 @@ aws s3 sync dist/ocr "s3://$MTG_BUCKET/ocr" --delete --cache-control "public, ma
 aws s3 sync dist/assets "s3://$MTG_BUCKET/assets" --delete --cache-control "public, max-age=31536000, immutable"
 
 aws cloudfront create-invalidation --distribution-id "$MTG_DISTRIBUTION_ID" \
-  --paths /index.html /sw.js /manifest.webmanifest /icon.svg
+  --paths /index.html /sw.js /manifest.webmanifest /icon.svg /app-icon.svg

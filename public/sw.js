@@ -1,6 +1,6 @@
 // Bump when a SHELL file (like icon.svg) changes, so installed copies drop the old one.
-const CACHE = 'codys-mtg-v2';
-const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg'];
+const CACHE = 'codys-mtg-v3';
+const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg', '/app-icon.svg'];
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
