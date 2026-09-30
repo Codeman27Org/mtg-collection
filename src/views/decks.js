@@ -4,11 +4,12 @@ import * as account from '../account.js';
 import * as collection from '../collection.js';
 import * as decks from '../decks.js';
 import { getCards } from '../scryfall.js';
-import { lockedBanner, loading, emptyState, dropdown } from '../components.js';
+import { lockedBanner, loading, emptyState, dropdown, firstSyncNotice } from '../components.js';
 import { deckTile, assemblyStatus } from './deck-tile.js';
 import { deckPlan } from '../location-logic.js';
 import { deckStats } from '../analytics.js';
 import { deckCreatedAt } from '../merge.js';
+import * as sync from '../sync.js';
 
 const FILTERS = [
   ['all', 'All'],
@@ -34,8 +35,16 @@ export default async function decksView(root) {
     ].filter(Boolean),
   );
 
+  let shownPhase = null;
   async function render() {
     const list = await decks.list();
+    if (!list.length && sync.firstPullPending()) {
+      const fp = sync.getState().firstPull;
+      shownPhase = fp?.phase ?? 'checking';
+      body.replaceChildren(firstSyncNotice(fp, () => sync.syncNow()));
+      return;
+    }
+    shownPhase = null;
     if (!list.length) {
       body.replaceChildren(
         emptyState('No decks yet', account.canEdit() ? h('a', { class: 'btn btn-primary', href: '#/decks/new' }, 'Create your first deck') : null),
@@ -87,6 +96,11 @@ export default async function decksView(root) {
     );
   }
   await render();
-  const offs = [on('decks', render), on('collection', render), on('locations', render)];
+  const offs = [
+    on('decks', render),
+    on('collection', render),
+    on('locations', render),
+    on('sync', (s) => shownPhase && shownPhase !== (s.firstPull?.phase ?? 'done') && render()),
+  ];
   return () => offs.forEach((off) => off());
 }

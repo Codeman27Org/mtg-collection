@@ -7,7 +7,7 @@ import * as locations from '../locations.js';
 import * as scryfall from '../scryfall.js';
 import * as sync from '../sync.js';
 import { summarize } from '../collection-stats.js';
-import { lockedBanner, loading, emptyState } from '../components.js';
+import { lockedBanner, loading, emptyState, firstSyncNotice } from '../components.js';
 import { deckTile, newDeckTile } from './deck-tile.js';
 import { collectionDashboard } from './dashboard.js';
 import { deckPlan } from '../location-logic.js';
@@ -41,10 +41,19 @@ async function latestReleases(ownedBySet) {
 }
 
 export default async function homeView(root) {
+  // Phase of the first-sync panel currently shown, or null when showing the normal page.
+  let shownPhase = null;
   async function render() {
     root.replaceChildren(loading());
     const entries = await collection.entries();
     const deckList = await decks.list();
+    if (!entries.length && !deckList.length && sync.firstPullPending()) {
+      const fp = sync.getState().firstPull;
+      shownPhase = fp?.phase ?? 'checking';
+      root.replaceChildren(...[lockedBanner(), firstSyncNotice(fp, () => sync.syncNow())].filter(Boolean));
+      return;
+    }
+    shownPhase = null;
     const cards = await scryfall.getCards([...entries.map((e) => e.scryfallId), ...deckList.flatMap(decks.activeIds)]);
     const ownedByOracle = await collection.ownedByOracle();
     const usedOracles = new Set(deckList.flatMap(decks.activeIds).map((id) => cards.get(id)?.oracle_id).filter(Boolean));
@@ -95,6 +104,11 @@ export default async function homeView(root) {
     );
   }
   await render();
-  const offs = [on('collection', render), on('decks', render), on('locations', render)];
+  const offs = [
+    on('collection', render),
+    on('decks', render),
+    on('locations', render),
+    on('sync', (s) => shownPhase && shownPhase !== (s.firstPull?.phase ?? 'done') && render()),
+  ];
   return () => offs.forEach((off) => off());
 }

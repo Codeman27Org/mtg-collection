@@ -10,6 +10,7 @@ import { route, setGuard, mount, navigate } from './router.js';
 import { openCardModal } from './cardui.js';
 import { action } from './components.js';
 import { debounce } from './util.js';
+import { APP_NAME } from './constants.js';
 
 import homeView from './views/home.js';
 import collectionView from './views/collection.js';
@@ -199,7 +200,7 @@ function layout() {
     h(
       'header',
       { class: 'topbar' },
-      h('a', { class: 'brand', href: '#/' }, "Cody's MTG", h('span', { class: 'brand-long' }, ' Collection')),
+      h('a', { class: 'brand', href: '#/', 'aria-label': `${APP_NAME} home`, title: APP_NAME }, h('img', { src: '/icon.svg', alt: '', width: 36, height: 36 })),
       navLinks('top-nav'),
       globalSearch(),
       h('div', { class: 'topbar-right' }, syncIndicator(), themeBtn, h('a', { class: 'icon-btn', href: '#/settings', 'aria-label': 'Settings' }, '⚙')),

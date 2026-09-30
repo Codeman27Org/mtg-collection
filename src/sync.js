@@ -21,7 +21,7 @@ import { sleep, fromBase64Url } from './util.js';
 
 export const pool = new SimplePool();
 
-const state = { status: 'idle', pending: 0, lastSync: null, error: null, relays: {} };
+const state = { status: 'idle', pending: 0, lastSync: null, error: null, relays: {}, firstPull: null };
 let flushTimer = null;
 let pullTimer = null;
 let flushing = false;
@@ -37,6 +37,18 @@ const PULL_EVERY_MS = 15 * 60_000;
 const LAST_PULL_KEY = 'codys-mtg:last-pull';
 // Per account, so logging into another account always pulls its data.
 const lastPullKey = () => `${LAST_PULL_KEY}:${account.current()}`;
+// Set once this device has finished checking relays for an account, so empty pages can say "checking" until then.
+const firstPullKey = () => `codys-mtg:first-pull-done:${account.current()}`;
+
+/** True until this device has completed one pull for the current account. */
+export const firstPullPending = () => !!account.current() && !localStorage.getItem(firstPullKey());
+
+/** For brand-new accounts, which have nothing on relays to wait for. */
+export function markFirstPullDone() {
+  if (!account.current()) return;
+  localStorage.setItem(firstPullKey(), '1');
+  setState({ firstPull: null });
+}
 
 export const getState = () => state;
 
@@ -449,11 +461,17 @@ export async function pull() {
   if (!navigator.onLine) return setState({ status: 'offline' });
   lastPullAt = Date.now();
   localStorage.setItem(lastPullKey(), String(lastPullAt));
-  setState({ status: 'syncing' });
+  setState({ status: 'syncing', ...(firstPullPending() ? { firstPull: { phase: 'checking' } } : {}) });
   try {
     const d = await db();
     const relays = (await getRelays()).filter((url) => !relayPause(url));
-    if (!relays.length) return setState({ status: 'error', error: 'Every relay asked us to back off; sync resumes automatically.' });
+    if (!relays.length) {
+      return setState({
+        status: 'error',
+        error: 'Every relay asked us to back off; sync resumes automatically.',
+        ...(firstPullPending() ? { firstPull: { phase: 'failed' } } : {}),
+      });
+    }
     const key = selfConversationKey(sk, pubkey);
     const filter = { authors: [pubkey], kinds: [KIND] };
     const results = await Promise.all(
@@ -478,6 +496,13 @@ export async function pull() {
         }
       }
     }
+    const first = firstPullPending();
+    // Every relay failing isn't the same as "nothing there"; don't show a new-user screen for it.
+    if (first && results.every((r) => !r.events)) {
+      setState({ status: 'error', error: 'Couldn’t reach any relays.', firstPull: { phase: 'failed' } });
+      return;
+    }
+    if (first && newest.size) setState({ firstPull: { phase: 'loading' } });
 
     const changed = new Set();
     const republish = [];
@@ -500,6 +525,10 @@ export async function pull() {
       await d.put('sync', latest);
     }
     // Show pulled changes now; the relay repair below is throttled and can take a while.
+    if (first) {
+      localStorage.setItem(firstPullKey(), '1');
+      setState({ firstPull: null });
+    }
     for (const store of changed) emit(`remote:${store}`);
 
     // Relay repair: re-send the newest signed event to relays that lack it. Emptied share events are skipped:
@@ -537,7 +566,7 @@ export async function pull() {
     setState({ status: 'idle', lastSync: Date.now(), error: null, relays: state.relays });
   } catch (err) {
     console.error('sync pull failed', err);
-    setState({ status: 'error', error: err.message });
+    setState({ status: 'error', error: err.message, ...(firstPullPending() ? { firstPull: { phase: 'failed' } } : {}) });
   }
   flush();
 }
@@ -556,7 +585,7 @@ export function start({ pullNow = false } = {}) {
   running = true;
   // Reloads (and the dev server's hot reloads) shouldn't each trigger a full pull and repair; logging in always pulls.
   lastPullAt = Number(localStorage.getItem(lastPullKey())) || 0;
-  if (pullNow || Date.now() - lastPullAt > 60_000) pull();
+  if (pullNow || firstPullPending() || Date.now() - lastPullAt > 60_000) pull();
   else refreshPending().then(() => state.pending && scheduleFlush());
   pullTimer = setInterval(pull, PULL_EVERY_MS);
 }
@@ -567,7 +596,7 @@ export function stop() {
   clearTimeout(flushTimer);
   pullTimer = null;
   firstPendingAt = null;
-  setState({ status: 'idle', pending: 0, relays: {}, error: null });
+  setState({ status: 'idle', pending: 0, relays: {}, error: null, firstPull: null });
 }
 
 if (typeof document !== 'undefined') {

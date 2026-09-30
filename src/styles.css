@@ -124,11 +124,14 @@ code,
 }
 
 .brand {
-  font-weight: 700;
-  color: var(--text);
-  text-decoration: none;
-  white-space: nowrap;
-  font-family: Beleren, Georgia, serif;
+  display: flex;
+  flex: none;
+  border-radius: 10px;
+}
+.brand img {
+  display: block;
+  width: 36px;
+  height: 36px;
 }
 
 .top-nav {
@@ -512,6 +515,9 @@ fieldset {
   background: var(--card);
   border: 1px dashed var(--border);
   border-radius: var(--radius);
+}
+.empty .loading {
+  justify-content: center;
 }
 
 .toasts {
@@ -1867,9 +1873,6 @@ progress {
     gap: 8px;
     padding: 0 10px;
   }
-  .brand {
-    font-size: 0.9rem;
-  }
   .global-search {
     max-width: none;
   }
@@ -1938,12 +1941,6 @@ progress {
     margin-left: auto;
   }
   .theme-btn {
-    display: none;
-  }
-}
-
-@media (max-width: 480px) {
-  .brand-long {
     display: none;
   }
 }

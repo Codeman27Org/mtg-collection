@@ -208,3 +208,24 @@ export function loading(text = 'Loading…') {
 export function emptyState(title, ...children) {
   return h('div', { class: 'empty' }, h('h3', {}, title), ...children);
 }
+
+/** Shown in place of "nothing here yet" while this device first checks relays for the account's data. */
+export function firstSyncNotice(firstPull, retry) {
+  if (firstPull?.phase === 'failed') {
+    return h(
+      'div',
+      { class: 'empty' },
+      h('h3', {}, 'Couldn’t check for your collection'),
+      h('p', {}, 'None of your relays answered. If you’ve used this account before, your cards and decks are still saved there.'),
+      h('button', { class: 'btn btn-primary', type: 'button', onclick: action(retry) }, 'Try again'),
+    );
+  }
+  const found = firstPull?.phase === 'loading';
+  return h(
+    'div',
+    { class: 'empty' },
+    h('h3', {}, found ? 'Found your data' : 'Checking for your collection'),
+    loading(found ? 'Loading your collection and decks…' : 'Looking for your cards and decks on your relays…'),
+    h('p', { class: 'muted small' }, 'This only happens the first time you log in on a device.'),
+  );
+}

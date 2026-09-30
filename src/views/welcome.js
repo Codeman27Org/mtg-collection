@@ -1,6 +1,6 @@
 import { h } from '../dom.js';
 import * as account from '../account.js';
-import { markEverything } from '../sync.js';
+import { markEverything, markFirstPullDone } from '../sync.js';
 import { navigate, nextPath } from '../router.js';
 import { field, action, toast } from '../components.js';
 import { copyText, download } from '../util.js';
@@ -34,6 +34,7 @@ function createPanel(next) {
         e.preventDefault();
         if (!saved.checked) throw new Error('Please confirm you saved your key first.');
         await account.login(sk, rem.read());
+        markFirstPullDone();
         await markEverything();
         navigate(next);
       }),
