@@ -20,7 +20,7 @@ import { nameIndex, readName, identifyPrinting, regionHash } from '../scan/ident
 
 // Below this, ask instead of guessing.
 const THRESHOLD = 0.8;
-const AUTO_EVERY_MS = 400;
+const AUTO_EVERY_MS = 250;
 const NEW_DECK = '__new__';
 const pct = (n) => `${Math.round(n * 100)}%`;
 
@@ -199,6 +199,7 @@ export default async function scanView(root, { query }) {
     const viewport = h('div', { class: 'scan-viewport' }, video, guide, counter, flash);
     const status = h('p', { class: 'scan-status', role: 'status', 'aria-live': 'polite' }, 'Starting the camera…');
     const loadNote = h('p', { class: 'muted small', hidden: true });
+    const timing = h('p', { class: 'muted small scan-timing', hidden: true });
     const result = h('div', { class: 'scan-result', hidden: true });
     const reviewBtn = h('button', { class: 'btn', type: 'button', onclick: () => show(reviewScreen, session) });
     const extras = h('div', { class: 'row wrap' });
@@ -341,7 +342,9 @@ export default async function scanView(root, { query }) {
       update();
       try {
         status.textContent = 'Reading the name…';
-        const read = await readName(source, rects);
+        const t0 = performance.now();
+        const read = await readName(source, rects, { quick: auto });
+        const t1 = performance.now();
         const rect = read?.rect ?? rects[0];
         let name = read?.matches[0]?.name;
         let nameConf = read?.confidence ?? 0;
@@ -359,7 +362,11 @@ export default async function scanView(root, { query }) {
           }
         }
         status.textContent = `Finding which printing of ${name}…`;
+        const t2 = performance.now();
         const found = await identifyPrinting(source, rect, name, owned);
+        const secs = (ms) => `${(ms / 1000).toFixed(1)} s`;
+        timing.hidden = false;
+        timing.textContent = `Name ${secs(t1 - t0)} · printing ${secs(performance.now() - t2)}`;
         if (found.basic) {
           status.textContent = `${name}: basic lands aren’t tracked by scanning, so it was skipped.`;
           return;
@@ -423,10 +430,11 @@ export default async function scanView(root, { query }) {
         if (lastScanSig && hamming(sig, lastScanSig) <= 14) return;
         armed = true;
       }
-      steady = moved <= 4 ? steady + 1 : 0;
-      if (steady < 2) return;
-      // Don't keep re-reading an unreadable view (an empty table, say) more than every few seconds.
-      if (lastTry.sig && hamming(sig, lastTry.sig) <= 6 && Date.now() - lastTry.at < 3000) return;
+      // dHash flips a few bits from hand shake alone; real movement flips many more.
+      steady = moved <= 7 ? steady + 1 : 0;
+      if (steady < 1) return;
+      // Don't keep re-reading an unreadable view (an empty table, say) more than about once a second.
+      if (lastTry.sig && hamming(sig, lastTry.sig) <= 6 && Date.now() - lastTry.at < 1000) return;
       lastTry = { sig, at: Date.now() };
       steady = 0;
       captureVideo(true);
@@ -452,7 +460,7 @@ export default async function scanView(root, { query }) {
       h(
         'div',
         { class: 'scan-layout' },
-        h('div', { class: 'stack' }, viewport, status, loadNote, h('div', { class: 'row wrap scan-controls' }, scanBtn, autoBtn, foilBtn, photoBtn, undoBtn), extras, tip),
+        h('div', { class: 'stack' }, viewport, status, timing, loadNote, h('div', { class: 'row wrap scan-controls' }, scanBtn, autoBtn, foilBtn, photoBtn, undoBtn), extras, tip),
         result,
       ),
     );

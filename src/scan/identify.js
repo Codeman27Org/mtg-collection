@@ -97,32 +97,31 @@ export function locateCard(source, rect) {
 const sameRect = (a, b) => Math.abs(a.x - b.x) < b.w * 0.015 && Math.abs(a.y - b.y) < b.h * 0.015 && Math.abs(a.h - b.h) < b.h * 0.02;
 
 /**
- * Reads the title from each candidate card rect (best guess first) until one is convincing. Each rect is first
- * corrected to the card's real outline when one can be found, since a card is rarely exactly on the guide.
- * Per rect: the title bar where it should be; then the lines of text near the top; then a smaller and an
- * inverted read. Returns { text, matches: [{ name, score }], confidence, rect }.
+ * Reads the title until a convincing match. Tries the title bar on the guide, then on the card's detected outline
+ * (a card is rarely exactly on the guide), then the lines of text near the top. Unless quick, also a smaller and
+ * an inverted read. Auto-scan uses quick, since it tries again on the next steady frame anyway.
+ * Returns { text, matches: [{ name, score }], confidence, rect }.
  */
-export async function readName(source, rects) {
+export async function readName(source, rects, { quick = false } = {}) {
   const index = await nameIndex();
   let best = null;
-  const tries = rects.flatMap((r) => {
-    const found = locateCard(source, r);
-    return found && !sameRect(found, r) ? [found, r] : [r];
-  });
-  for (const rect of tries) {
-    const consider = (text) => {
-      const matches = matchName(index, text, 3);
-      const confidence = nameConfidence(matches);
-      if (!best || confidence > best.confidence) best = { text, matches, confidence, rect };
-      return confidence >= 0.9;
-    };
-    const title = region(rect, REGIONS.title);
-    if (consider((await readText(prepare(source, title, 64), 'line')).text)) return best;
+  const consider = (text, rect) => {
+    const matches = matchName(index, text, 3);
+    const confidence = nameConfidence(matches);
+    if (!best || confidence > best.confidence) best = { text, matches, confidence, rect };
+    return confidence >= 0.9;
+  };
+  const titleRead = async (rect, h = 64, invert = false) => consider((await readText(prepare(source, region(rect, REGIONS.title), h, invert), 'line')).text, rect);
+  for (const rect of rects) {
+    if (await titleRead(rect)) return best;
+    const found = locateCard(source, rect);
+    if (found && !sameRect(found, rect) && (await titleRead(found))) return best;
     const area = region(rect, TITLE_AREA);
-    const lines = await readLines(prepare(source, area, (64 * area.h) / title.h));
-    for (const line of lines.sort((a, b) => a.bbox.y0 - b.bbox.y0).slice(0, 3)) if (consider(line.text)) return best;
-    if (consider((await readText(prepare(source, title, 48), 'line')).text)) return best;
-    if (consider((await readText(prepare(source, title, 64, true), 'line')).text)) return best;
+    const lines = await readLines(prepare(source, area, (64 * area.h) / region(rect, REGIONS.title).h));
+    for (const line of lines.sort((a, b) => a.bbox.y0 - b.bbox.y0).slice(0, 3)) if (consider(line.text, rect)) return best;
+    if (quick) continue;
+    if (await titleRead(rect, 48)) return best;
+    if (await titleRead(rect, 64, true)) return best;
   }
   return best;
 }
