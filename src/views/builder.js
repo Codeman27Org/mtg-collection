@@ -406,12 +406,14 @@ export default async function builderView(root, { params: [id], query }) {
         h('span', { class: 'basic-lands-title' }, 'Basic lands'),
         ...lands.map(([color, name]) => {
           const input = h('input', {
-            type: 'number',
+            type: 'text',
             inputmode: 'numeric',
-            min: 0,
-            max: 99,
+            pattern: '[0-9]*',
+            maxlength: 2,
+            autocomplete: 'off',
             'aria-label': `${name} in the deck`,
             onfocus: (e) => e.target.select(),
+            oninput: (e) => { e.target.value = e.target.value.replace(/\D/g, ''); },
             onchange: action((e) => setBasic(name, e.target.value)),
           });
           landInputs.set(name, input);
