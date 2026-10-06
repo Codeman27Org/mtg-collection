@@ -42,7 +42,7 @@ function rescanWarning(removedCount, count, name) {
     'div',
     { class: 'banner banner-warn scan-rescan-warning', role: 'alert' },
     h('strong', {}, `This takes ${plural(removedCount, 'card')} out of “${name}”.`),
-    ` A full rescan keeps only the ${plural(count, 'card')} you scanned. To add or take out a few cards, discard this scan and start again with “Add cards” or “Take cards out”.`,
+    ` A full rescan keeps only the ${plural(count, 'card')} you scanned. To just add a few cards, discard this scan and start again with “Add cards”.`,
   );
 }
 

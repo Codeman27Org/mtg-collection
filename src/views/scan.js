@@ -24,7 +24,6 @@ const AUTO_EVERY_MS = 250;
 const NEW_DECK = '__new__';
 const DECK_MODES = [
   ['add', 'Add cards to the deck', 'Scan the cards you’re putting in. Nothing is taken out.'],
-  ['remove', 'Take cards out of the deck', 'Scan the cards you’re pulling. They go back to where they came from.'],
   ['replace', 'Rescan the whole deck', 'Scan every card. Anything you don’t scan is taken out of the deck.'],
 ];
 const pct = (n) => `${Math.round(n * 100)}%`;
