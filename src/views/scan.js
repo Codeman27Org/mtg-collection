@@ -294,8 +294,53 @@ export default async function scanView(root, { query }) {
       viewport.classList.add('hit');
       counter.classList.add('bump');
       clearTimeout(flashTimer);
-      flashTimer = setTimeout(() => viewport.classList.remove('hit'), 1800);
+      flashTimer = setTimeout(() => viewport.classList.remove('hit'), 2600);
       navigator.vibrate?.(80);
+      showFullCard(card);
+    }
+
+    let bigCard = null;
+    /** The whole card, the size of the guide, held a moment and then shrunk into the banner's thumbnail. */
+    function showFullCard(card) {
+      bigCard?.remove();
+      const src = cardImage(card, 'normal');
+      if (!src || viewport.hidden) return;
+      const vp = viewport.getBoundingClientRect();
+      const g = guide.getBoundingClientRect();
+      const img = h('img', {
+        class: 'scan-big',
+        src,
+        alt: '',
+        'aria-hidden': 'true',
+        style: `left:${g.left - vp.left}px;top:${g.top - vp.top}px;width:${g.width}px;height:${g.height}px`,
+      });
+      bigCard = img;
+      // A late image popping up over the next card would be confusing, so give up after a moment.
+      const deadline = Date.now() + 800;
+      const play = () => {
+        if (bigCard !== img || Date.now() > deadline) return;
+        viewport.append(img);
+        // Offsets ignore the banner's slide-in, so this is where the thumbnail comes to rest.
+        const thumb = flash.querySelector('img');
+        const tx = flash.offsetLeft + thumb.offsetLeft - (g.left - vp.left);
+        const ty = flash.offsetTop + thumb.offsetTop - (g.top - vp.top);
+        const end = matchMedia('(prefers-reduced-motion: reduce)').matches
+          ? { opacity: 0 }
+          : { opacity: 0.9, transform: `translate(${tx}px, ${ty}px) scale(${thumb.offsetWidth / g.width})` };
+        img
+          .animate(
+            [
+              { opacity: 0, transform: 'scale(0.97)', offset: 0 },
+              { opacity: 1, transform: 'none', offset: 0.12 },
+              { opacity: 1, transform: 'none', offset: 0.6 },
+              { ...end, offset: 1 },
+            ],
+            { duration: 1300, easing: 'ease-in-out', fill: 'forwards' },
+          )
+          .finished.finally(() => img.remove());
+      };
+      if (img.complete) play();
+      else img.onload = play;
     }
 
     function showResult(card, finish, { nameConf, printConf, sameArt = 0 }) {

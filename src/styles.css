@@ -2093,6 +2093,15 @@ progress {
   opacity: 1;
   transform: none;
 }
+.scan-big {
+  position: absolute;
+  z-index: 2;
+  object-fit: cover;
+  border-radius: 4.75% / 3.5%;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.55);
+  transform-origin: 0 0;
+  pointer-events: none;
+}
 @media (prefers-reduced-motion: reduce) {
   .scan-flash,
   .scan-guide {
