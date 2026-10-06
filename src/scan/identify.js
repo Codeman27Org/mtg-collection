@@ -1,6 +1,6 @@
 // Identifies a card from an image: title OCR → name, then collector line or artwork → printing.
-import { readText } from './ocr.js';
-import { REGIONS, region } from './geometry.js';
+import { readText, readLines } from './ocr.js';
+import { REGIONS, region, findCardEdges } from './geometry.js';
 import {
   buildNameIndex,
   matchName,
@@ -50,32 +50,79 @@ function prepare(source, rect, targetH, invert = false) {
   return canvas;
 }
 
-const shift = (r, dy) => ({ ...r, y: r.y + r.h * dy });
+/** The top of the card where the title can be when the card isn't lined up with the guide. */
+const TITLE_AREA = [0.03, -0.02, 0.85, 0.2];
+
+const sizeOf = (source) => ({ w: source.videoWidth || source.naturalWidth || source.width, h: source.videoHeight || source.naturalHeight || source.height });
 
 /**
- * Reads the title from each candidate card rect (best guess first) until one is convincing.
- * Each read is quick (tens of milliseconds), so a few sizes and small shifts are tried to allow for a card
- * that isn't lined up exactly. Returns { text, matches: [{ name, score }], confidence, rect }.
+ * Finds the card's actual outline near where it should be (rect), from the straight edges of its border.
+ * Returns a rect in source pixels, or null when no card-shaped outline stands out.
+ */
+export function locateCard(source, rect) {
+  const size = sizeOf(source);
+  const pad = 0.15;
+  const x0 = Math.max(0, rect.x - rect.w * pad);
+  const y0 = Math.max(0, rect.y - rect.h * pad);
+  const area = { x: x0, y: y0, w: Math.min(size.w, rect.x + rect.w * (1 + pad)) - x0, h: Math.min(size.h, rect.y + rect.h * (1 + pad)) - y0 };
+  if (area.w <= 0 || area.h <= 0) return null;
+  const H = 320;
+  const scale = H / area.h;
+  const W = Math.max(1, Math.round(area.w * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(source, area.x, area.y, area.w, area.h, 0, 0, W, H);
+  const d = ctx.getImageData(0, 0, W, H).data;
+  const g = new Float32Array(W * H);
+  for (let i = 0; i < g.length; i++) g[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+  // Measure along the middle half of each side, away from corners and whatever sits beside the card.
+  const rows = new Float32Array(H);
+  for (let y = 1; y < H - 1; y++) {
+    let s = 0;
+    for (let x = Math.floor(W * 0.25); x < W * 0.75; x++) s += Math.abs(g[(y + 1) * W + x] - g[(y - 1) * W + x]);
+    rows[y] = s;
+  }
+  const cols = new Float32Array(W);
+  for (let x = 1; x < W - 1; x++) {
+    let s = 0;
+    for (let y = Math.floor(H * 0.25); y < H * 0.75; y++) s += Math.abs(g[y * W + x + 1] - g[y * W + x - 1]);
+    cols[x] = s;
+  }
+  const found = findCardEdges(rows, cols, H * 0.55);
+  return found && { x: area.x + found.x / scale, y: area.y + found.y / scale, w: found.w / scale, h: found.h / scale };
+}
+
+const sameRect = (a, b) => Math.abs(a.x - b.x) < b.w * 0.015 && Math.abs(a.y - b.y) < b.h * 0.015 && Math.abs(a.h - b.h) < b.h * 0.02;
+
+/**
+ * Reads the title from each candidate card rect (best guess first) until one is convincing. Each rect is first
+ * corrected to the card's real outline when one can be found, since a card is rarely exactly on the guide.
+ * Per rect: the title bar where it should be; then the lines of text near the top; then a smaller and an
+ * inverted read. Returns { text, matches: [{ name, score }], confidence, rect }.
  */
 export async function readName(source, rects) {
   const index = await nameIndex();
   let best = null;
-  const attempts = [
-    { h: 64, dy: 0, invert: false },
-    { h: 48, dy: 0, invert: false },
-    { h: 64, dy: -0.25, invert: false },
-    { h: 64, dy: 0.25, invert: false },
-    { h: 64, dy: 0, invert: true },
-  ];
-  for (const rect of rects) {
-    const title = region(rect, REGIONS.title);
-    for (const a of attempts) {
-      const { text } = await readText(prepare(source, shift(title, a.dy), a.h, a.invert), 'line');
+  const tries = rects.flatMap((r) => {
+    const found = locateCard(source, r);
+    return found && !sameRect(found, r) ? [found, r] : [r];
+  });
+  for (const rect of tries) {
+    const consider = (text) => {
       const matches = matchName(index, text, 3);
       const confidence = nameConfidence(matches);
       if (!best || confidence > best.confidence) best = { text, matches, confidence, rect };
-      if (confidence >= 0.9) return best;
-    }
+      return confidence >= 0.9;
+    };
+    const title = region(rect, REGIONS.title);
+    if (consider((await readText(prepare(source, title, 64), 'line')).text)) return best;
+    const area = region(rect, TITLE_AREA);
+    const lines = await readLines(prepare(source, area, (64 * area.h) / title.h));
+    for (const line of lines.sort((a, b) => a.bbox.y0 - b.bbox.y0).slice(0, 3)) if (consider(line.text)) return best;
+    if (consider((await readText(prepare(source, title, 48), 'line')).text)) return best;
+    if (consider((await readText(prepare(source, title, 64, true), 'line')).text)) return best;
   }
   return best;
 }
@@ -87,7 +134,7 @@ export async function printingsOf(name) {
   if (!printsByName.has(name)) {
     const p = (async () => {
       let list = [];
-      if (!name.includes('"')) list = (await scryfall.search(`!"${name}" game:paper`, { order: 'released', dir: 'desc', unique: 'prints' })).cards;
+      if (!name.includes('"')) list = (await scryfall.search(`!"${name}" game:paper`, { order: 'released', dir: 'desc', unique: 'prints', priority: 1 })).cards;
       if (!list.length) {
         const card = await scryfall.namedExact(name);
         if (!card) throw new Error(`Couldn’t find “${name}” on Scryfall.`);
@@ -138,17 +185,46 @@ function imageHash(url) {
 }
 
 /**
+ * Reads the set code and number. first: a read already under way, if any. When no set code turns up, the strip is
+ * read again a little higher and lower, since the card is rarely exactly on the guide.
+ */
+async function readCollector(source, rect, first) {
+  const strip = region(rect, REGIONS.collector);
+  const read = (dy) => readText(prepare(source, { ...strip, y: strip.y + rect.h * dy }, 90), 'block').catch(() => ({ text: '' }));
+  let parsed = parseCollector((await (first ?? read(0))).text);
+  for (const dy of [-0.025, 0.025]) {
+    if (parsed.set) break;
+    const again = parseCollector((await read(dy)).text);
+    if (again.set || (!parsed.number && again.number)) parsed = again;
+  }
+  return parsed;
+}
+
+/** Small shifts and size changes ([dx, dy, scale] as card fractions) to compare artwork at, for an off-guide card. */
+const ART_OFFSETS = [
+  [0, 0, 1],
+  [0, -0.035, 1],
+  [0, 0.035, 1],
+  [-0.03, 0, 1],
+  [0.03, 0, 1],
+  [0, 0, 0.92],
+  [0, 0, 1.08],
+];
+
+/**
  * Picks the printing. owned: Set of scryfallIds you own (preferred among identical artwork).
  * Returns { card, confidence, printings, basic, candidates, sameArt } (sameArt: printings sharing the matched artwork).
  */
 export async function identifyPrinting(source, rect, name, owned) {
+  // For a card not looked up yet, read the collector line while Scryfall answers.
+  const cached = printsByName.has(name);
+  const collector = cached ? null : readText(prepare(source, region(rect, REGIONS.collector), 90), 'block').catch(() => ({ text: '' }));
   const printings = await printingsOf(name);
   const basic = isBasicLand(printings[0]);
   if (basic) return { card: printings[0], confidence: 1, printings, basic, candidates: printings };
   if (printings.length === 1) return { card: printings[0], confidence: 0.99, printings, basic, candidates: printings };
 
-  const { text } = await readText(prepare(source, region(rect, REGIONS.collector), 90), 'block');
-  const parsed = parseCollector(text);
+  const parsed = await readCollector(source, rect, collector);
   const hit = printingFromCollector(printings, parsed);
   if (hit.card) return { card: hit.card, confidence: hit.confidence, printings, basic, candidates: [hit.card] };
   // No set code at the bottom usually means a pre-2014 frame, which tells reprints of the same art apart.
@@ -158,12 +234,17 @@ export async function identifyPrinting(source, rect, name, owned) {
   // Same artwork everywhere: nothing to compare. Prefer a copy you own, else by frame age; it can be changed in review.
   if (groups.length === 1) return { card: preferPrinting(groups[0], owned, prefer), confidence: 0.85, printings, basic, candidates: hit.candidates, sameArt: groups[0].length };
 
-  const cam = regionHash(source, region(rect, REGIONS.art));
+  const cams = ART_OFFSETS.map(([dx, dy, s]) => {
+    const art = region(rect, REGIONS.art);
+    const w = art.w * s;
+    const h = art.h * s;
+    return regionHash(source, { x: art.x + (art.w - w) / 2 + rect.w * dx, y: art.y + (art.h - h) / 2 + rect.h * dy, w, h });
+  });
   const scored = (
     await Promise.all(
       groups.map(async (ps) => {
         const url = cardImage(ps[0], 'small');
-        const d = url ? await imageHash(url).then((hash) => hamming(cam, hash), () => 64) : 64;
+        const d = url ? await imageHash(url).then((hash) => Math.min(...cams.map((cam) => hamming(cam, hash))), () => 64) : 64;
         return { ps, d };
       }),
     )

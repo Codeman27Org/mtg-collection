@@ -7,11 +7,15 @@ const API = 'https://api.scryfall.com';
 const SLOW = /^\/cards\/(search|named|random|collection)/;
 const PENALTY_MS = 30_000;
 
-let queue = Promise.resolve();
 let lastRequest = 0;
+const pending = [];
+let draining = false;
 
-/** Serializes every Scryfall request and spaces them per Scryfall's published rate limits. */
-function request(path, { method = 'GET', body } = {}) {
+/**
+ * Serializes every Scryfall request and spaces them per Scryfall's published rate limits.
+ * Higher priority runs first, so a scan or a typed search doesn't wait behind a background price refresh.
+ */
+function request(path, { method = 'GET', body, priority = 0 } = {}) {
   const run = async () => {
     // A margin over Scryfall's 500 ms / 100 ms limits, since network jitter can bunch requests together.
     const wait = lastRequest + (SLOW.test(path) ? 600 : 120) - Date.now();
@@ -36,9 +40,25 @@ function request(path, { method = 'GET', body } = {}) {
     const data = await res.json();
     return { status: res.status, data };
   };
-  const p = queue.then(run, run);
-  queue = p.catch(() => {});
-  return p;
+  return new Promise((resolve, reject) => {
+    const at = pending.findIndex((job) => job.priority < priority);
+    pending.splice(at < 0 ? pending.length : at, 0, { run, resolve, reject, priority });
+    drain();
+  });
+}
+
+async function drain() {
+  if (draining) return;
+  draining = true;
+  while (pending.length) {
+    const job = pending.shift();
+    try {
+      job.resolve(await job.run());
+    } catch (err) {
+      job.reject(err);
+    }
+  }
+  draining = false;
 }
 
 const pickImages = (uris) => uris && { small: uris.small, normal: uris.normal, art_crop: uris.art_crop };
@@ -177,9 +197,9 @@ export async function getCard(id) {
   return (await getCards([id])).get(id);
 }
 
-export async function search(q, { page = 1, order = 'edhrec', dir = 'auto', unique = 'cards' } = {}) {
+export async function search(q, { page = 1, order = 'edhrec', dir = 'auto', unique = 'cards', priority = 0 } = {}) {
   const params = new URLSearchParams({ q, page: String(page), order, dir, unique });
-  const { status, data } = await request(`/cards/search?${params}`);
+  const { status, data } = await request(`/cards/search?${params}`, { priority });
   if (status === 404) return { cards: [], total: 0, hasMore: false };
   if (status !== 200) throw new Error(data?.details ?? `Scryfall error ${status}`);
   const cards = data.data.map(trim);
@@ -192,7 +212,7 @@ export async function autocomplete(q) {
   const key = q.trim().toLowerCase();
   if (key.length < 2) return [];
   if (!autocompleteMemo.has(key)) {
-    const { data } = await request(`/cards/autocomplete?q=${encodeURIComponent(key)}`);
+    const { data } = await request(`/cards/autocomplete?q=${encodeURIComponent(key)}`, { priority: 1 });
     autocompleteMemo.set(key, data?.data ?? []);
   }
   return autocompleteMemo.get(key);
@@ -213,12 +233,12 @@ export async function prints(oracleId) {
 
 /** Paper printings only (for identifying a physical card). */
 export async function paperPrints(oracleId) {
-  const { cards } = await search(`oracleid:${oracleId} game:paper`, { order: 'released', unique: 'prints' });
+  const { cards } = await search(`oracleid:${oracleId} game:paper`, { order: 'released', unique: 'prints', priority: 1 });
   return cards;
 }
 
 export async function namedExact(name) {
-  const { status, data } = await request(`/cards/named?exact=${encodeURIComponent(name)}`);
+  const { status, data } = await request(`/cards/named?exact=${encodeURIComponent(name)}`, { priority: 1 });
   if (status !== 200) return null;
   const card = trim(data);
   await storeCards([card]);

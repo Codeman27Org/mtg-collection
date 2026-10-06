@@ -15,7 +15,7 @@ import {
   groupByArt,
   finishFor,
 } from '../src/scan/match.js';
-import { coverToSource, centeredCard, region, REGIONS } from '../src/scan/geometry.js';
+import { coverToSource, centeredCard, region, REGIONS, findCardEdges } from '../src/scan/geometry.js';
 import { newSession, addScan, undoLast, setQty, replaceItem, scannedCount, planRecount } from '../src/scan/session-logic.js';
 import { planDeckScan } from '../src/scan/deck-scan.js';
 import { deckLocation } from '../src/location-logic.js';
@@ -30,6 +30,9 @@ const index = buildNameIndex([
   'Æther Vial',
   "Urza's Saga",
   'Counterspell',
+  'Fell',
+  'Fell the Mighty',
+  'Purphoros, God of the Forge',
 ]);
 
 test('names normalize accents, ligatures, and punctuation', () => {
@@ -47,6 +50,15 @@ test('fuzzy name match survives OCR slips and trailing junk', () => {
   assert.equal(matchName(index, 'Counterspel1')[0].name, 'Counterspell');
   assert.equal(matchName(index, 'A Bonecrusher Giant Hn')[0].name, 'Bonecrusher Giant // Stomp');
   assert.ok(nameConfidence(matchName(index, 'A Bonecrusher Giant Hn')) > 0.9);
+  // A short name that's only the start of what was read mustn't beat the full name with a typo.
+  assert.equal(matchName(index, 'Fell the Mighly')[0].name, 'Fell the Mighty');
+  assert.equal(matchName(index, 'Fell tbe Mighty 4')[0].name, 'Fell the Mighty');
+  assert.equal(matchName(index, 'Fell')[0].name, 'Fell');
+  assert.equal(matchName(index, 'Purphoros, God of the F')[0].name, 'Purphoros, God of the Forge');
+  // Junk that happens to contain a short name is only a weak guess.
+  const junk = buildNameIndex(['Bat', 'Dead // Gone', 'Lightning Helix']);
+  assert.ok(nameConfidence(matchName(junk, 'Ee Bat')) < 0.8);
+  assert.ok(nameConfidence(matchName(junk, ') dead ncix')) < 0.8);
   assert.deepEqual(matchName(index, 'x'), []);
   assert.ok(nameConfidence(matchName(index, 'Lightning Bolt')) > 0.95);
   assert.ok(nameConfidence(matchName(index, 'qzx vwpk')) < 0.8);
@@ -56,6 +68,7 @@ test('collector line parsing handles old and new layouts', () => {
   assert.deepEqual(parseCollector('141/264 R\nM20 • EN  Christopher Moeller'), { set: 'm20', number: '141' });
   assert.deepEqual(parseCollector('R 0123\nWOE • EN Artist Name'), { set: 'woe', number: '123' });
   assert.deepEqual(parseCollector('O47/254 C\nDOM * EN'), { set: 'dom', number: '47' });
+  assert.deepEqual(parseCollector('263 U\nC21 « EN » MIKE BIEREK'), { set: 'c21', number: '263' });
   assert.deepEqual(parseCollector('smudge'), { set: null, number: null });
 });
 
@@ -116,6 +129,18 @@ test('guide maps from a cover-fit video back to frame pixels', () => {
   assert.equal(c.h, 1000);
   const t = region({ x: 0, y: 0, w: 630, h: 880 }, REGIONS.title);
   assert.ok(t.y > 0 && t.y + t.h < 880 * 0.13);
+});
+
+test('card outline prefers the outer edge over stronger frame lines inside it', () => {
+  const rows = new Float32Array(120);
+  const cols = new Float32Array(100);
+  // Outer edge: 63 wide × 88 tall at (20, 10). Frame lines inside it are stronger.
+  rows[10] = rows[98] = 5;
+  cols[20] = cols[83] = 5;
+  rows[14] = rows[94] = 9;
+  cols[23] = cols[80] = 9;
+  assert.deepEqual(findCardEdges(rows, cols, 50), { x: 20, y: 10, w: 63, h: 88 });
+  assert.equal(findCardEdges(new Float32Array(120), new Float32Array(100), 50), null);
 });
 
 const card = (id, oracle, extra = {}) => ({ id, oracle_id: oracle, name: oracle, finishes: ['nonfoil', 'foil'], type_line: 'Instant', ...extra });

@@ -24,8 +24,15 @@ export function buildNameIndex(names) {
     const key = normalizeName(frontFace(name));
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    out.push({ name, key });
+    out.push({ name, key, n: letters(key), pairs: pairsOf(key) });
   }
+  return out;
+}
+
+/** Letter pairs as numbers (characters are ASCII after normalizeName). */
+function pairsOf(s) {
+  const out = new Uint16Array(Math.max(0, s.length - 1));
+  for (let i = 0; i < out.length; i++) out[i] = ((s.charCodeAt(i) & 127) << 7) | (s.charCodeAt(i + 1) & 127);
   return out;
 }
 
@@ -48,42 +55,126 @@ export function levenshtein(a, b, max = Infinity) {
   return prev[b.length];
 }
 
-const similarity = (a, b) => {
-  const len = Math.max(a.length, b.length);
+/** Similarity 0–1, or 0 when it would be under min (which lets the edit distance stop early). */
+const similarity = (a, b, min = 0.5) => prefixSimilarity(a, a.length, b, b.length, min);
+
+let rowA = new Int32Array(256);
+let rowB = new Int32Array(256);
+
+/** Edit distance between a[0, al) and b[0, bl), or max + 1 once it must exceed max. Reuses its rows. */
+function prefixDistance(a, al, b, bl, max) {
+  if (Math.abs(al - bl) > max) return max + 1;
+  if (bl >= rowA.length) {
+    rowA = new Int32Array(bl + 1);
+    rowB = new Int32Array(bl + 1);
+  }
+  let prev = rowA;
+  let cur = rowB;
+  for (let j = 0; j <= bl; j++) prev[j] = j;
+  for (let i = 1; i <= al; i++) {
+    cur[0] = i;
+    let rowMin = i;
+    const ca = a.charCodeAt(i - 1);
+    for (let j = 1; j <= bl; j++) {
+      let v = prev[j - 1] + (ca === b.charCodeAt(j - 1) ? 0 : 1);
+      if (prev[j] + 1 < v) v = prev[j] + 1;
+      if (cur[j - 1] + 1 < v) v = cur[j - 1] + 1;
+      cur[j] = v;
+      if (v < rowMin) rowMin = v;
+    }
+    if (rowMin > max) return max + 1;
+    const t = prev;
+    prev = cur;
+    cur = t;
+  }
+  return prev[bl];
+}
+
+/** similarity() of a[0, al) and b[0, bl) without slicing. */
+function prefixSimilarity(a, al, b, bl, min) {
+  const len = al > bl ? al : bl;
   if (!len) return 0;
-  // Anything under half-similar is noise, so stop computing early.
-  const d = levenshtein(a, b, Math.floor(len / 2));
-  return Math.max(0, 1 - d / len);
-};
+  const max = Math.floor((1 - min) * len);
+  if (Math.abs(al - bl) > max) return 0;
+  const d = prefixDistance(a, al, b, bl, max);
+  return d > max ? 0 : 1 - d / len;
+}
+
+const letters = (s) => s.replace(/[^a-z0-9]/g, '').length;
+const isLetter = (c) => c !== 32 && c !== 39;
+
+/** Letters (not spaces or apostrophes) in a normalized string from index i on. */
+function lettersFrom(s, i) {
+  let n = 0;
+  for (; i < s.length; i++) if (isLetter(s.charCodeAt(i))) n++;
+  return n;
+}
 
 /**
  * Best name guesses for OCR text: [{ name, score }] (score 0–1), best first.
  * OCR often picks up stray marks from the mana cost or frame at the end, so a name that matches the start of the
- * text scores almost as well as a full match.
+ * text scores well, but less so the more is left over ("Fell" must not win over "Fell the Mighty"). A long name
+ * whose end was cut off scores well the same way.
  */
 export function matchName(index, text, limit = 3) {
   const full = normalizeName(text);
   if (full.length < 2) return [];
   // Frame edges often read as a stray letter or two before the name ("a bonecrusher giant"); try without them.
-  const variants = [[full, 1]];
+  const variants = [{ q: full, weight: 1 }];
   const words = full.split(' ');
-  for (let drop = 1; drop <= 2 && words[drop - 1]?.length <= 2 && words.length > drop; drop++) variants.push([words.slice(drop).join(' '), 0.98]);
-  const best = [];
-  for (const { name, key } of index) {
-    let score = 0;
-    for (const [q, weight] of variants) {
-      if (key.length > q.length * 1.6 + 3) continue;
-      let s = Math.abs(key.length - q.length) <= Math.max(3, q.length * 0.4) ? similarity(key, q) : 0;
-      if (q.length > key.length + 1) s = Math.max(s, similarity(key, q.slice(0, key.length)) * 0.97);
-      score = Math.max(score, s * weight);
-    }
-    if (score < 0.4) continue;
-    if (best.length < limit || score > best[best.length - 1].score) {
-      best.push({ name, score });
-      best.sort((a, b) => b.score - a.score);
-      if (best.length > limit) best.pop();
-    }
+  for (let drop = 1; drop <= 2 && words[drop - 1]?.length <= 2 && words.length > drop; drop++) {
+    const rest = words.slice(drop).join(' ');
+    if (letters(rest) >= 5) variants.push({ q: rest, weight: 0.98 });
   }
+  for (const v of variants) {
+    // tail[k]: letters in q from k on, for the "left over after the name" penalty.
+    v.tail = new Uint16Array(v.q.length + 1);
+    for (let k = v.q.length - 1; k >= 0; k--) v.tail[k] = v.tail[k + 1] + (isLetter(v.q.charCodeAt(k)) ? 1 : 0);
+  }
+  const total = letters(full);
+  const readPairs = new Uint8Array(1 << 14);
+  for (const { q } of variants) for (const p of pairsOf(q)) readPairs[p] = 1;
+  const best = [];
+  const tryEntry = ({ name, key, n }) => {
+    // Only work out scores that could make the list.
+    const floor = best.length < limit ? 0.4 : best[best.length - 1].score;
+    // A name that accounts for little of what was read ("Dead" from "dead ncix") is a weak guess.
+    const short = n < total * 0.6 ? 0.85 : 1;
+    const kl = key.length;
+    let score = 0;
+    for (const { q, weight, tail } of variants) {
+      const ql = q.length;
+      if (kl > ql * 1.6 + 3 && ql < 6) continue;
+      const m = weight * short;
+      let bar = floor > score ? floor : score;
+      if (m <= bar) continue;
+      if (Math.abs(kl - ql) <= Math.max(3, ql * 0.4)) {
+        const s = prefixSimilarity(key, kl, q, ql, bar / m) * m;
+        if (s > score) score = s;
+        bar = floor > score ? floor : score;
+      }
+      if (ql > kl + 1) {
+        const mult = m * Math.max(0.5, 0.97 - 0.015 * tail[kl]);
+        if (mult > bar) score = Math.max(score, prefixSimilarity(key, kl, q, kl, bar / mult) * mult);
+      } else if (kl > ql + 1 && ql >= 6 && m * 0.97 > bar) {
+        const mult = m * Math.max(0.5, 0.97 - 0.015 * lettersFrom(key, ql));
+        if (mult > bar) score = Math.max(score, prefixSimilarity(key, ql, q, ql, bar / mult) * mult);
+      }
+    }
+    if (score < 0.4 || (best.length >= limit && score <= floor)) return;
+    best.push({ name, score });
+    best.sort((a, b) => b.score - a.score);
+    if (best.length > limit) best.pop();
+  };
+  // Names sharing most letter pairs with the reading go first, so the cutoff rises early and the rest are cheap.
+  const later = [];
+  for (const entry of index) {
+    let shared = 0;
+    for (const p of entry.pairs) shared += readPairs[p];
+    if (shared * 2 >= entry.pairs.length) tryEntry(entry);
+    else later.push(entry);
+  }
+  for (const entry of later) tryEntry(entry);
   return best;
 }
 
@@ -97,7 +188,7 @@ export function nameConfidence(matches) {
 }
 
 const LANGS = 'EN|ES|FR|DE|IT|PT|JA|JP|KO|RU|ZHS|ZHT|CS|CT|PH';
-const SET_LANG = new RegExp(`\\b([A-Z0-9]{3,5})\\s*[•*·.,:;+-]?\\s*(?:${LANGS})\\b`);
+const SET_LANG = new RegExp(`\\b([A-Z0-9]{3,5})\\s*[^\\sA-Z0-9]{0,2}\\s*(?:${LANGS})\\b`);
 // OCR reads these letters and digits interchangeably in the small collector font.
 const DIGITISH = { O: '0', Q: '0', D: '0', I: '1', L: '1', l: '1', '|': '1', S: '5', B: '8', Z: '2', G: '6' };
 

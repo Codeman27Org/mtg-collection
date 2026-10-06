@@ -38,6 +38,17 @@ export async function readText(canvas, mode = 'line') {
   return { text: (data.text ?? '').trim(), confidence: (data.confidence ?? 0) / 100 };
 }
 
+/** Reads a block of text as lines: [{ text, bbox: { x0, y0, x1, y1 } }] in canvas pixels. */
+export async function readLines(canvas) {
+  const worker = await ocrWorker();
+  await worker.setParameters({ tessedit_pageseg_mode: '6' });
+  const { data } = await worker.recognize(canvas, {}, { text: true, blocks: true });
+  return (data.blocks ?? [])
+    .flatMap((b) => b.paragraphs.flatMap((p) => p.lines))
+    .map((l) => ({ text: l.text.trim(), bbox: l.bbox }))
+    .filter((l) => l.text);
+}
+
 export async function stopOcr() {
   const p = workerPromise;
   workerPromise = null;
