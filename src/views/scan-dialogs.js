@@ -8,6 +8,13 @@ import { printingsOf } from '../scan/identify.js';
 
 const pct = (n) => `${Math.round(n * 100)}%`;
 
+/** What askName and askPrinting resolve to when the user would rather scan the card again. */
+export const RESCAN = Symbol('rescan');
+
+function rescanButton(done) {
+  return h('button', { class: 'btn btn-primary scan-again', type: 'button', onclick: done }, '↻ Scan again');
+}
+
 /** A name search box with Scryfall autocomplete. onPick(name). */
 function nameSearch(onPick, placeholder = 'Search card names…') {
   const list = h('ul', { class: 'scan-suggest', role: 'listbox' });
@@ -23,7 +30,8 @@ function nameSearch(onPick, placeholder = 'Search card names…') {
 
 /**
  * Asks which card this is when the title couldn't be read well.
- * read: { text, matches: [{ name, score }] }; titleImage: optional canvas of what was read. Resolves to a name or null.
+ * read: { text, matches: [{ name, score }] }; titleImage: optional canvas of what was read.
+ * Resolves to a name, RESCAN, or null (skip).
  */
 export function askName(read, titleImage) {
   return new Promise((resolve) => {
@@ -39,6 +47,7 @@ export function askName(read, titleImage) {
       content: h(
         'div',
         { class: 'stack' },
+        rescanButton(() => pick(RESCAN)),
         titleImage ?? null,
         h('p', { class: 'muted small' }, read?.text ? `Read “${read.text}”, which isn’t a clear match.` : 'Couldn’t read the card name.'),
         read?.matches?.length
@@ -59,8 +68,8 @@ export function askName(read, titleImage) {
 
 const printingLabel = (c) => `${c.set.toUpperCase()} #${c.collector_number}`;
 
-/** A grid of printings to tap. Resolves to a card, or null. suggested is shown first. */
-export function askPrinting(printings, { suggested, title = 'Which printing?', note } = {}) {
+/** A grid of printings to tap. Resolves to a card, RESCAN (only with rescan), or null. suggested is shown first. */
+export function askPrinting(printings, { suggested, title = 'Which printing?', note, rescan = false } = {}) {
   return new Promise((resolve) => {
     let result = null;
     const ordered = suggested ? [suggested, ...printings.filter((p) => p.id !== suggested.id)] : printings;
@@ -70,6 +79,12 @@ export function askPrinting(printings, { suggested, title = 'Which printing?', n
       content: h(
         'div',
         { class: 'stack' },
+        rescan
+          ? rescanButton(() => {
+              result = RESCAN;
+              dlg.dismiss();
+            })
+          : null,
         note ? h('p', { class: 'muted small' }, note) : null,
         h(
           'div',

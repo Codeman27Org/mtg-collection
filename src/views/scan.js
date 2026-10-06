@@ -8,7 +8,7 @@ import { action, confirmDialog, lockedBanner, dropdown, field } from '../compone
 import { cardImage } from '../card-utils.js';
 import { FORMATS, FORMAT_LABELS } from '../constants.js';
 import { locationPicker } from './location-ui.js';
-import { askName, askPrinting, pickCard } from './scan-dialogs.js';
+import { askName, askPrinting, pickCard, RESCAN } from './scan-dialogs.js';
 import { renderReview, targetName, targetKind, describe } from './scan-review.js';
 import { loadSession, saveSession, clearSession } from '../scan/session.js';
 import { newSession, addScan, undoLast, replaceItem, scannedCount, itemKey } from '../scan/session-logic.js';
@@ -232,7 +232,7 @@ export default async function scanView(root, { query }) {
         if (!file || busy) return;
         const canvas = await photoCanvas(file);
         // Photos have no guide; try the card filling the picture, then smaller.
-        await identifyAndAdd(canvas, [1, 0.8, 0.6].map((f) => centeredCard(canvas.width, canvas.height, f)));
+        await identifyAndAdd(canvas, [1, 0.8, 0.6].map((f) => centeredCard(canvas.width, canvas.height, f)), { photo: true });
       }),
     });
     const photoBtn = h('label', { class: 'btn' }, 'Use a photo', photoInput);
@@ -337,10 +337,11 @@ export default async function scanView(root, { query }) {
       );
     }
 
-    async function identifyAndAdd(source, rects, { auto = false } = {}) {
+    async function identifyAndAdd(source, rects, { auto = false, photo = false } = {}) {
       if (busy) return;
       busy = true;
       update();
+      let rescan = false;
       try {
         status.textContent = 'Reading the name…';
         const t0 = performance.now();
@@ -357,6 +358,10 @@ export default async function scanView(root, { query }) {
           }
           name = await askName(read, titleCrop(source, rect));
           nameConf = null;
+          if (name === RESCAN) {
+            rescan = true;
+            return;
+          }
           if (!name) {
             status.textContent = 'Skipped. Ready for the next card.';
             return;
@@ -381,8 +386,12 @@ export default async function scanView(root, { query }) {
         let card = found.card;
         let printConf = found.confidence;
         if (printConf < THRESHOLD) {
-          card = await askPrinting(found.candidates, { suggested: found.card, note: `Couldn’t tell which printing of ${name} this is. Tap the one you have.` });
+          card = await askPrinting(found.candidates, { suggested: found.card, rescan: true, note: `Couldn’t tell which printing of ${name} this is. Tap the one you have.` });
           printConf = null;
+          if (card === RESCAN) {
+            rescan = true;
+            return;
+          }
           if (!card) {
             status.textContent = 'Skipped. Ready for the next card.';
             return;
@@ -407,6 +416,7 @@ export default async function scanView(root, { query }) {
       } finally {
         busy = false;
         update();
+        if (rescan) scanAgain(photo);
       }
     }
 
@@ -419,6 +429,19 @@ export default async function scanView(root, { query }) {
     function captureVideo(auto = false) {
       if (!cam || busy || !video.videoWidth) return;
       identifyAndAdd(grabFrame(video), [guideInVideo()], { auto });
+    }
+
+    /** After “Scan again”: read the next steady view right away (auto), or take a new frame after a moment to re-aim. */
+    function scanAgain(photo) {
+      if (photo || !cam) {
+        status.textContent = 'Choose another photo of the card.';
+        return;
+      }
+      status.textContent = 'Scanning again… hold the card steady in the frame.';
+      armed = true;
+      steady = 0;
+      lastTry = { sig: null, at: 0 };
+      if (!auto) setTimeout(() => captureVideo(), 600);
     }
 
     // Auto-scan: read the card once the view holds still, then wait for the view to change (the next card)

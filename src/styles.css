@@ -2129,6 +2129,13 @@ progress {
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
 }
+.scan-again {
+  width: 100%;
+  justify-content: center;
+  padding: 12px;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
 .scan-suggest {
   list-style: none;
   margin: 0;
