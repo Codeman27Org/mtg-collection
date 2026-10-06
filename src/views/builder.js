@@ -81,6 +81,14 @@ function exportMenu(deck, cards) {
   );
 }
 
+const BASICS = [
+  ['W', 'Plains'],
+  ['U', 'Island'],
+  ['B', 'Swamp'],
+  ['R', 'Mountain'],
+  ['G', 'Forest'],
+];
+
 function countPicker(card, onPick) {
   const dlg = modal({
     title: `Add ${card.name}`,
@@ -368,6 +376,78 @@ export default async function builderView(root, { params: [id], query }) {
     listPanel.replaceChildren(deckList(deck, cards, { ...handlers, ownedByOracle, usageByOracle, plan, locationName: (id) => locationOf(id).name }));
     statsPanel.replaceChildren(deckAnalytics(deck, cards, { ownedByOracle, usageByOracle }));
     renderToolbar();
+    renderLands();
+  }
+
+  // ---------------------------------------------------------------- basic lands
+  const landsBar = h('section', { class: 'basic-lands', 'aria-label': 'Basic lands' });
+  const landInputs = new Map();
+  const basicLines = (name) =>
+    Object.values(deck.lines)
+      .filter((l) => l.qty > 0 && l.section !== 'maybeboard' && cards.get(l.scryfallId)?.name === name)
+      .sort((a, b) => Number(b.section === 'main') - Number(a.section === 'main'));
+  const basicTotal = (name) => basicLines(name).reduce((n, l) => n + l.qty, 0);
+
+  /** The commander's basic land types (Wastes for a colorless commander); all five without a commander. */
+  function landsToShow() {
+    if (!Object.values(deck.lines).some((l) => l.section === 'commander' && l.qty > 0)) return BASICS;
+    const identity = commanderIdentity();
+    return identity.length ? BASICS.filter(([c]) => identity.includes(c)) : [['C', 'Wastes']];
+  }
+
+  function renderLands() {
+    if (!editable) return;
+    const lands = landsToShow();
+    const key = lands.map(([, name]) => name).join();
+    if (landsBar.dataset.key !== key) {
+      landsBar.dataset.key = key;
+      landInputs.clear();
+      landsBar.replaceChildren(
+        h('span', { class: 'basic-lands-title' }, 'Basic lands'),
+        ...lands.map(([color, name]) => {
+          const input = h('input', {
+            type: 'number',
+            inputmode: 'numeric',
+            min: 0,
+            max: 99,
+            'aria-label': `${name} in the deck`,
+            onfocus: (e) => e.target.select(),
+            onchange: action((e) => setBasic(name, e.target.value)),
+          });
+          landInputs.set(name, input);
+          return h('label', { class: 'basic-land' }, manaCost(`{${color}}`), h('span', {}, name), input);
+        }),
+      );
+    }
+    // Don't overwrite a number while it's being typed.
+    for (const [name, input] of landInputs) if (document.activeElement !== input) input.value = String(basicTotal(name));
+  }
+
+  /** Sets how many of a basic land the deck has: grows the main-deck line, or trims lines (main first). */
+  async function setBasic(name, value) {
+    const total = Math.max(0, Math.min(99, Math.floor(Number(value) || 0)));
+    const lines = basicLines(name);
+    const current = lines.reduce((n, l) => n + l.qty, 0);
+    if (total === current) return;
+    const changes = [];
+    if (total > current) {
+      const target = lines.find((l) => l.section === 'main') ?? lines[0];
+      if (target) changes.push({ scryfallId: target.scryfallId, section: target.section, qty: target.qty + total - current });
+      else {
+        const card = await scryfall.namedExact(name);
+        if (!card) throw new Error(`Couldn’t find ${name} on Scryfall.`);
+        changes.push({ scryfallId: card.id, section: 'main', qty: total });
+      }
+    } else {
+      let cut = current - total;
+      for (const l of lines) {
+        if (!cut) break;
+        const n = Math.min(cut, l.qty);
+        changes.push({ scryfallId: l.scryfallId, section: l.section, qty: l.qty - n });
+        cut -= n;
+      }
+    }
+    await decks.setLines(deck.id, changes);
   }
 
   const startTab = editable && query?.has('source') ? 'search' : 'deck';
@@ -403,6 +483,7 @@ export default async function builderView(root, { params: [id], query }) {
       ),
       h('details', { class: 'description' }, h('summary', {}, 'Description'), description),
       tabs,
+      editable ? landsBar : null,
       grid,
     ].filter(Boolean),
   );

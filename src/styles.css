@@ -1269,6 +1269,31 @@ fieldset {
 .builder-tabs {
   display: none;
 }
+.basic-lands {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.basic-lands-title {
+  flex-basis: 100%;
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+.basic-land {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.basic-land input {
+  width: 50px;
+  text-align: center;
+}
 .search-results {
   list-style: none;
   padding: 0;
