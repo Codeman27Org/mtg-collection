@@ -5,8 +5,9 @@ import * as locations from '../locations.js';
 import { getCards } from '../scryfall.js';
 import { isBasicLand } from '../card-utils.js';
 import { deckLocation } from '../location-logic.js';
-import { planRecount } from './session-logic.js';
+import { planRecount, deckModeOf } from './session-logic.js';
 import { planDeckScan } from './deck-scan.js';
+import { isSingleton } from '../formats.js';
 
 const scannedOf = (session) => session.items.map((i) => ({ scryfallId: i.scryfallId, finish: i.finish, qty: i.qty }));
 
@@ -42,7 +43,8 @@ export async function planDeckSave(session) {
   const ids = [...decks.activeIds(deck), ...entries.map((e) => e.scryfallId), ...session.items.map((i) => i.scryfallId)];
   const cards = await getCards(ids);
   const sources = new Map(session.items.filter((i) => i.source).map((i) => [i.key, i.source]));
-  return { deck, cards, ...planDeckScan(deck, cards, entries, scannedOf(session), sources) };
+  const mode = deckModeOf(session);
+  return { deck, cards, mode, ...planDeckScan(deck, cards, entries, scannedOf(session), { sources, mode, singleton: isSingleton(deck.format) }) };
 }
 
 /** Applies a deck plan. An unscanned commander stays in the list. Returns the deck (created now if it's new). */

@@ -2215,6 +2215,12 @@ progress {
   flex-basis: 100%;
   margin: 0 0 0 58px;
 }
+.scan-deck-modes .check {
+  align-items: flex-start;
+}
+.scan-deck-modes input {
+  margin-top: 4px;
+}
 .scan-changes .check {
   align-items: flex-start;
 }

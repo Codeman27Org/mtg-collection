@@ -7,7 +7,7 @@ import { action, toast, confirmDialog, loading, dropdown } from '../components.j
 import { cardImage } from '../card-utils.js';
 import { locationToken } from '../location-logic.js';
 import { saveSession, clearSession } from '../scan/session.js';
-import { setQty, replaceItem, scannedCount } from '../scan/session-logic.js';
+import { setQty, replaceItem, scannedCount, deckModeOf } from '../scan/session-logic.js';
 import { planCollectionSave, saveCollectionScan, planDeckSave, saveDeckScan } from '../scan/apply.js';
 import { pickCard } from './scan-dialogs.js';
 import { SECTION_LABELS } from '../constants.js';
@@ -31,11 +31,25 @@ export async function targetName(session) {
 /** “the deck ”, “the new deck ”, or nothing, to go before a target name. */
 export const targetKind = (session) => (session.newDeck ? 'the new deck ' : session.mode === 'deck' ? 'the deck ' : '');
 
+/** “adding cards” etc., for headings while scanning a deck. */
+export const deckModeText = (session) =>
+  session.newDeck ? 'new deck' : { add: 'adding cards', remove: 'taking cards out', replace: 'rescanning the whole deck' }[deckModeOf(session)];
+
 const plural = (n, one, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+
+function rescanWarning(removedCount, count, name) {
+  return h(
+    'div',
+    { class: 'banner banner-warn scan-rescan-warning', role: 'alert' },
+    h('strong', {}, `This takes ${plural(removedCount, 'card')} out of “${name}”.`),
+    ` A full rescan keeps only the ${plural(count, 'card')} you scanned. To add or take out a few cards, discard this scan and start again with “Add cards” or “Take cards out”.`,
+  );
+}
 
 export async function renderReview(root, session, { onScanMore, onDiscard, onSaved }) {
   const target = await targetName(session);
   const intro = h('p', { class: 'muted' });
+  const topWarning = h('div', {});
   const list = h('div', { class: 'stack scan-items' });
   const savePanel = h('section', { class: 'panel stack' });
   root.append(
@@ -63,6 +77,7 @@ export async function renderReview(root, session, { onScanMore, onDiscard, onSav
       ),
     ),
     intro,
+    topWarning,
     list,
     savePanel,
   );
@@ -74,7 +89,7 @@ export async function renderReview(root, session, { onScanMore, onDiscard, onSav
 
   async function render() {
     const count = scannedCount(session);
-    intro.textContent = `${plural(count, 'card')} for ${targetKind(session)}“${target}”${session.recount ? ' (recount)' : ''}. Nothing has changed yet; changes are made when you save.`;
+    intro.textContent = `${plural(count, 'card')} for ${targetKind(session)}“${target}”${session.recount ? ' (recount)' : ''}${session.mode === 'deck' && !session.newDeck ? ` (${deckModeText(session)})` : ''}. Nothing has changed yet; changes are made when you save.`;
     savePanel.replaceChildren(loading('Working out changes…'));
     const cards = await getCards(session.items.map((i) => i.scryfallId));
     let plan = null;
@@ -92,6 +107,8 @@ export async function renderReview(root, session, { onScanMore, onDiscard, onSav
         ? session.items.map((item) => itemRow(item, cards.get(item.scryfallId), plan && sourceControl(item, plan, lookup)))
         : [h('p', { class: 'muted' }, 'Nothing scanned yet.')]),
     );
+    const removing = plan?.mode === 'replace' && !plan.deck.isNew ? plan.lines.filter((l) => l.checked && l.to < l.from).reduce((n, l) => n + l.from - l.to, 0) : 0;
+    topWarning.replaceChildren(removing ? rescanWarning(removing, count, plan.deck.name) : '');
     try {
       if (planError) throw planError;
       savePanel.replaceChildren(...(session.mode === 'deck' ? deckSave(plan) : await collectionSave()).filter(Boolean));
@@ -104,6 +121,7 @@ export async function renderReview(root, session, { onScanMore, onDiscard, onSav
   function sourceControl(item, plan, lookup) {
     const choice = plan.choices.get(item.key);
     if (!choice) return null;
+    if (choice.removing) return h('p', { class: 'muted small scan-source' }, choice.listed ? 'Comes out of the deck' : 'Not in this deck');
     if (!choice.options.length) return h('p', { class: 'muted small scan-source' }, 'Already in this deck');
     const label = (o) => {
       if (o.value === 'new') return 'New card (add to collection)';
@@ -243,6 +261,7 @@ export async function renderReview(root, session, { onScanMore, onDiscard, onSav
   function deckSave(plan) {
     if (!plan) return [h('p', { class: 'muted' }, 'Scan some cards to save.')];
     const count = scannedCount(session);
+    const name = plan.deck.name;
     const section = (s) => (s === 'main' ? '' : ` (${SECTION_LABELS[s] ?? s})`);
     const nameOf = (l) => `${l.card?.name ?? 'Unknown card'}${section(l.section)}`;
     const total = (list) => list.reduce((n, x) => n + x.qty, 0);
@@ -256,34 +275,70 @@ export async function renderReview(root, session, { onScanMore, onDiscard, onSav
       added && `${added} new to your collection`,
     ].filter(Boolean);
     const removed = plan.lines.filter((l) => l.checked && (l.kind === 'remove' || l.kind === 'fewer'));
+    const removedCount = removed.reduce((n, l) => n + l.from - l.to, 0);
+    const addedCount = plan.lines.filter((l) => l.to > l.from).reduce((n, l) => n + l.to - l.from, 0);
     const keptCommanders = plan.lines.filter((l) => !l.checked);
 
-    return [
-      h('h2', {}, plan.deck.isNew ? `Create “${plan.deck.name}”` : 'Save to deck'),
-      h('p', {}, `The deck list will match the ${plural(count, 'card')} you scanned${parts.length ? `: ${parts.join(', ')}.` : '.'}`),
-      removed.length
-        ? h('p', { class: 'small' }, `Not scanned, so taken out of the deck: ${removed.map((l) => (l.kind === 'remove' ? nameOf(l) : `${nameOf(l)} ${l.from} → ${l.to}`)).join(', ')}. Their copies go back to where they came from.`)
-        : null,
-      keptCommanders.length ? h('p', { class: 'muted small' }, `${keptCommanders.map(nameOf).join(', ')} wasn’t scanned but stays in the deck.`) : null,
-      h('p', { class: 'muted small' }, 'Basic lands are left as they are.'),
+    const save = (label, { confirm } = {}) =>
       h(
         'div',
         { class: 'row end' },
         h(
           'button',
           {
-            class: 'btn btn-primary',
+            class: `btn ${confirm ? 'btn-danger' : 'btn-primary'}`,
             type: 'button',
             onclick: action(async () => {
+              if (confirm && !(await confirmDialog(confirm.message, { confirmLabel: confirm.label, danger: true }))) return;
               const deck = await saveDeckScan(plan);
               await clearSession();
               toast(`Saved the scan to ${deck.name}`);
               onSaved(`/decks/${deck.id}`);
             }),
           },
-          plan.deck.isNew ? 'Create deck' : 'Save deck',
+          label,
         ),
-      ),
+      );
+    const basics = h('p', { class: 'muted small' }, 'Basic lands are left as they are.');
+
+    if (plan.mode === 'remove') {
+      const notListed = session.items.filter((i) => plan.choices.get(i.key)?.removing && !plan.choices.get(i.key).listed).map((i) => i.name);
+      return [
+        h('h2', {}, 'Take out of deck'),
+        h('p', {}, removedCount ? `Takes ${plural(removedCount, 'card')} out of “${name}”. Their copies go back to where they came from.` : `None of the scanned cards are in “${name}”.`),
+        notListed.length ? h('p', { class: 'muted small' }, `Not in this deck, so nothing to take out: ${notListed.join(', ')}.`) : null,
+        basics,
+        removedCount ? save(`Take out ${plural(removedCount, 'card')}`) : null,
+      ];
+    }
+
+    if (plan.mode === 'add') {
+      return [
+        h('h2', {}, 'Add to deck'),
+        h('p', {}, addedCount ? `Adds ${plural(addedCount, 'card')} to “${name}”${parts.length ? `: ${parts.join(', ')}.` : '.'} Nothing is taken out.` : `Everything you scanned is already in “${name}”.`),
+        basics,
+        addedCount || fromBinders || fromDecks || added ? save(addedCount ? `Add ${plural(addedCount, 'card')}` : 'Save') : null,
+      ];
+    }
+
+    const warn = !plan.deck.isNew && removedCount ? rescanWarning(removedCount, count, name) : null;
+    return [
+      h('h2', {}, plan.deck.isNew ? `Create “${name}”` : 'Rescan deck'),
+      warn,
+      h('p', {}, `The deck list will match the ${plural(count, 'card')} you scanned${parts.length ? `: ${parts.join(', ')}.` : '.'}`),
+      removed.length
+        ? h('p', { class: 'small' }, `Not scanned, so taken out of the deck: ${removed.map((l) => (l.kind === 'remove' ? nameOf(l) : `${nameOf(l)} ${l.from} → ${l.to}`)).join(', ')}. Their copies go back to where they came from.`)
+        : null,
+      keptCommanders.length ? h('p', { class: 'muted small' }, `${keptCommanders.map(nameOf).join(', ')} wasn’t scanned but stays in the deck.`) : null,
+      basics,
+      plan.deck.isNew
+        ? save('Create deck')
+        : save(removedCount ? `Replace deck (take out ${removedCount})` : 'Save deck', {
+            confirm: removedCount && {
+              message: `Take ${plural(removedCount, 'card')} out of “${name}”? Only the ${plural(count, 'card')} you scanned will be left in the deck.`,
+              label: `Take out ${plural(removedCount, 'card')}`,
+            },
+          }),
     ];
   }
 

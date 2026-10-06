@@ -9,7 +9,7 @@ import { cardImage } from '../card-utils.js';
 import { FORMATS, FORMAT_LABELS } from '../constants.js';
 import { locationPicker } from './location-ui.js';
 import { askName, askPrinting, pickCard, RESCAN } from './scan-dialogs.js';
-import { renderReview, targetName, targetKind, describe } from './scan-review.js';
+import { renderReview, targetName, targetKind, deckModeText, describe } from './scan-review.js';
 import { loadSession, saveSession, clearSession } from '../scan/session.js';
 import { newSession, addScan, undoLast, replaceItem, scannedCount, itemKey } from '../scan/session-logic.js';
 import { finishFor, hamming } from '../scan/match.js';
@@ -22,6 +22,11 @@ import { nameIndex, readName, identifyPrinting, regionHash } from '../scan/ident
 const THRESHOLD = 0.8;
 const AUTO_EVERY_MS = 250;
 const NEW_DECK = '__new__';
+const DECK_MODES = [
+  ['add', 'Add cards to the deck', 'Scan the cards you’re putting in. Nothing is taken out.'],
+  ['remove', 'Take cards out of the deck', 'Scan the cards you’re pulling. They go back to where they came from.'],
+  ['replace', 'Rescan the whole deck', 'Scan every card. Anything you don’t scan is taken out of the deck.'],
+];
 const pct = (n) => `${Math.round(n * 100)}%`;
 
 export default async function scanView(root, { query }) {
@@ -48,7 +53,7 @@ export default async function scanView(root, { query }) {
       h(
         'section',
         { class: 'panel stack' },
-        h('p', {}, `You have an unsaved scan of ${count} ${count === 1 ? 'card' : 'cards'} for ${targetKind(session)}“${target}”${session.recount ? ' (recount)' : ''}. Nothing from it has been saved yet.`),
+        h('p', {}, `You have an unsaved scan of ${count} ${count === 1 ? 'card' : 'cards'} for ${targetKind(session)}“${target}”${session.recount ? ' (recount)' : ''}${session.mode === 'deck' ? ` (${deckModeText(session)})` : ''}. Nothing from it has been saved yet.`),
         h(
           'div',
           { class: 'row wrap' },
@@ -97,9 +102,24 @@ export default async function scanView(root, { query }) {
       (v) => {
         deckId = v;
         newFields.hidden = v !== NEW_DECK;
+        deckModes.hidden = v === NEW_DECK;
         if (v === NEW_DECK) newName.focus();
       },
       { label: 'Deck' },
+    );
+    let deckMode = 'add';
+    const deckModes = h(
+      'fieldset',
+      { class: 'stack scan-deck-modes', hidden: deckId === NEW_DECK },
+      h('legend', {}, 'What are you doing?'),
+      DECK_MODES.map(([value, label, hint]) =>
+        h(
+          'label',
+          { class: 'check' },
+          h('input', { type: 'radio', name: 'deck-mode', value, checked: value === deckMode, onchange: () => (deckMode = value) }),
+          h('span', {}, h('strong', {}, label), h('br'), h('span', { class: 'muted small' }, hint)),
+        ),
+      ),
     );
 
     function render() {
@@ -134,10 +154,11 @@ export default async function scanView(root, { query }) {
         body.replaceChildren(
           h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Deck'), deckPicker),
           newFields,
+          deckModes,
           h(
             'p',
             { class: 'muted small' },
-            'Scan every card in the deck. When you save, the deck list is updated to match (you can untick any change), scanned copies are moved into the deck from your binders, and copies you don’t own yet are added. A new deck is only created when you save. Basic lands are skipped.',
+            'Scanned copies are moved into the deck from your binders, and ones you don’t own yet are added. A new deck is only created when you save. Basic lands are skipped.',
           ),
         );
       }
@@ -166,7 +187,7 @@ export default async function scanView(root, { query }) {
                   if (!name) throw new Error('Give the new deck a name.');
                   session = newSession({ mode, newDeck: { name, format: newFormat } });
                 } else if (mode === 'deck') {
-                  session = newSession({ mode, deckId });
+                  session = newSession({ mode, deckId, deckMode });
                 } else {
                   session = newSession({ mode, location: await picker.value(), recount: recount.checked });
                 }
@@ -541,7 +562,7 @@ export default async function scanView(root, { query }) {
     );
 
     root.append(
-      h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Scanning'), h('p', { class: 'muted small' }, `${session.newDeck ? 'New deck' : session.mode === 'deck' ? 'Deck' : 'Into'}: ${target}${session.recount ? ' (recount)' : ''}`)), reviewBtn),
+      h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Scanning'), h('p', { class: 'muted small' }, `${session.newDeck ? 'New deck' : session.mode === 'deck' ? 'Deck' : 'Into'}: ${target}${session.recount ? ' (recount)' : ''}${session.mode === 'deck' && !session.newDeck ? ` · ${deckModeText(session)}` : ''}`)), reviewBtn),
       h(
         'div',
         { class: 'scan-layout' },

@@ -246,7 +246,7 @@ test('deck scan plans list changes and where each copy comes from', () => {
     { scryfallId: 'saga', finish: 'nonfoil', qty: 1 }, // the foil copy in the binder
     { scryfallId: 'forest', finish: 'nonfoil', qty: 3 }, // ignored
   ];
-  const plan = planDeckScan(deck, cards, entries, scanned);
+  const plan = planDeckScan(deck, cards, entries, scanned, { mode: 'replace' });
 
   const lines = Object.fromEntries(plan.lines.map((l) => [l.scryfallId, [l.kind, l.from, l.to, l.checked]]));
   assert.deepEqual(lines, {
@@ -276,7 +276,29 @@ test('deck scan plans list changes and where each copy comes from', () => {
   assert.deepEqual(plan.choices.get('ring:nonfoil'), { kept: 1, value: null, options: [] });
 
   // Choosing the other deck takes its one copy; the second is still new.
-  const taken = planDeckScan(deck, cards, entries, scanned, new Map([['helix:nonfoil', 'deck:other']]));
+  const taken = planDeckScan(deck, cards, entries, scanned, { mode: 'replace', sources: new Map([['helix:nonfoil', 'deck:other']]) });
   assert.deepEqual(taken.moves.filter((m) => m.fromDeck).map((m) => [m.entry.scryfallId, m.qty, m.fromDeck]), [['helix', 1, 'deck:other']]);
   assert.deepEqual(taken.adds.map((a) => [a.scryfallId, a.qty]), [['helix', 1]]);
+
+  // Adding never takes anything out, and scanning a card already in a singleton deck changes nothing.
+  const withCmdr = [...entries, entry('cmdr', 1, here)];
+  const added = planDeckScan(deck, cards, withCmdr, [{ scryfallId: 'cmdr', finish: 'nonfoil', qty: 1 }, { scryfallId: 'helix', finish: 'nonfoil', qty: 1 }], { mode: 'add', singleton: true });
+  assert.deepEqual(added.lines.map((l) => [l.scryfallId, l.kind, l.from, l.to]), [['helix', 'add', 0, 1]]);
+  assert.deepEqual(added.returns, []);
+  assert.equal(added.kept, 1);
+  assert.deepEqual(added.choices.get('cmdr:nonfoil'), { kept: 1, value: null, options: [] });
+  assert.deepEqual(added.adds.map((a) => [a.scryfallId, a.qty]), [['helix', 1]]);
+
+  // Adding to a non-singleton deck: one more Bolt, the copy coming from the binder.
+  const more = planDeckScan(deck, cards, entries, [{ scryfallId: 'bolt-b', finish: 'nonfoil', qty: 1 }], { mode: 'add' });
+  assert.deepEqual(more.lines.map((l) => [l.scryfallId, l.kind, l.from, l.to]), [['bolt-a', 'more', 1, 2]]);
+  assert.deepEqual(more.moves.map((m) => [m.entry.scryfallId, m.qty]), [['bolt-b', 1]]);
+  assert.deepEqual(more.returns, []);
+
+  // Taking out: only the scanned cards leave, and their recorded copies go back.
+  const out = planDeckScan(deck, cards, entries, [{ scryfallId: 'vial', finish: 'nonfoil', qty: 1 }, { scryfallId: 'saga', finish: 'nonfoil', qty: 1 }], { mode: 'remove' });
+  assert.deepEqual(out.lines.map((l) => [l.scryfallId, l.kind]), [['vial', 'remove']]);
+  assert.deepEqual(out.returns.map((r) => [r.entry.scryfallId, r.qty]), [['vial', 1]]);
+  assert.deepEqual([out.moves, out.adds], [[], []]);
+  assert.equal(out.choices.get('saga:nonfoil').listed, false);
 });

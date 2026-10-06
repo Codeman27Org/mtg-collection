@@ -1,29 +1,32 @@
-// Pure planner for "scan a deck": the scanned cards become the deck, and the scanned copies end up in its location.
+// Pure planner for "scan a deck": add scanned cards to a deck, take them out, or make them the whole deck.
 import { isBasicLand } from '../card-utils.js';
 import { deckLocation, isDeckLocation } from '../location-logic.js';
 
 const PLAYED = ['commander', 'companion', 'main', 'sideboard'];
-// When the scan has fewer copies than the list, trim these sections first.
+// When the list shrinks, trim these sections first.
 const TRIM_ORDER = ['main', 'sideboard', 'companion', 'commander'];
 
 /**
  * deck: { id, lines }; cards: Map scryfallId → card (deck lines, entries, and scans);
  * entries: every owned stack; scanned: [{ scryfallId, finish, qty }].
- * sources: Map itemKey ("scryfallId:finish") → where those copies come from: 'loose' (binders and Unsorted), 'new',
+ * mode: 'add' (scanned copies join the deck; nothing is taken out), 'remove' (scanned copies come out), or
+ * 'replace' (the scanned cards become the whole deck; anything not scanned comes out).
+ * singleton: in 'add', a card already in the list stays at one copy (Commander and the like).
+ * sources: Map itemKey ("scryfallId:finish") → where added copies come from: 'loose' (binders and Unsorted), 'new',
  * or another deck's location id. Unset means 'loose' when there's a loose copy, else 'new'.
  * Basic lands are left alone, in the list and in the deck's location.
  *
  * Returns {
  *   lines: [{ id, kind: 'add' | 'more' | 'fewer' | 'remove', card, scryfallId, section, from, to, checked }],
- *     (checked: false for an unscanned commander, which is left in the list)
+ *     (checked: false for an unscanned commander in 'replace', which is left in the list)
  *   kept,                                    // scanned copies already recorded in the deck
  *   moves: [{ id, entry, qty, fromDeck, unit }], // copies to move in; fromDeck is set for copies in another deck
  *   adds: [{ id, scryfallId, finish, qty }],  // scanned copies added to the collection as new
- *   returns: [{ id, entry, qty }],            // copies recorded in the deck that weren't scanned
- *   choices: Map itemKey → { kept, value, options: [{ value, qty, locations? }] },
+ *   returns: [{ id, entry, qty }],            // copies recorded in the deck that go back where they came from
+ *   choices: Map itemKey → { kept, value, options: [{ value, qty, locations? }], removing?, listed? },
  * }
  */
-export function planDeckScan(deck, cards, entries, scanned, sources = new Map()) {
+export function planDeckScan(deck, cards, entries, scanned, { sources = new Map(), mode = 'replace', singleton = false } = {}) {
   const here = deckLocation(deck.id);
   const oracleOf = (id) => cards.get(id)?.oracle_id;
   const tracked = (id) => {
@@ -51,22 +54,32 @@ export function planDeckScan(deck, cards, entries, scanned, sources = new Map())
     listed.get(oracle).push(l);
   }
 
-  // ---- the list
+  // ---- the list: each card's new total, then the line changes that get there
+  const listedQty = (oracle) => (listed.get(oracle) ?? []).reduce((n, l) => n + l.qty, 0);
+  const targets = new Map();
+  if (mode === 'replace') {
+    for (const oracle of new Set([...want.keys(), ...listed.keys()])) targets.set(oracle, want.get(oracle)?.total ?? 0);
+  } else {
+    for (const [oracle, w] of want) {
+      const have = listedQty(oracle);
+      if (mode === 'remove') targets.set(oracle, Math.max(0, have - w.total));
+      else targets.set(oracle, singleton ? Math.max(have, 1) : have + w.total);
+    }
+  }
   const lines = [];
-  for (const oracle of new Set([...want.keys(), ...listed.keys()])) {
-    const scannedQty = want.get(oracle)?.total ?? 0;
+  for (const [oracle, total] of targets) {
     const rows = listed.get(oracle) ?? [];
-    const listedQty = rows.reduce((n, l) => n + l.qty, 0);
-    if (scannedQty > listedQty) {
+    const have = listedQty(oracle);
+    if (total > have) {
       if (!rows.length) {
         const top = [...want.get(oracle).units].sort((a, b) => b.qty - a.qty)[0];
-        lines.push(change('add', top.scryfallId, 'main', 0, scannedQty));
+        lines.push(change('add', top.scryfallId, 'main', 0, total));
       } else {
         const target = rows.find((l) => l.section === 'main') ?? rows[0];
-        lines.push(change('more', target.scryfallId, target.section, target.qty, target.qty + scannedQty - listedQty));
+        lines.push(change('more', target.scryfallId, target.section, target.qty, target.qty + total - have));
       }
-    } else if (scannedQty < listedQty) {
-      let cut = listedQty - scannedQty;
+    } else if (total < have) {
+      let cut = have - total;
       for (const l of [...rows].sort((a, b) => TRIM_ORDER.indexOf(a.section) - TRIM_ORDER.indexOf(b.section))) {
         if (!cut) break;
         const n = Math.min(cut, l.qty);
@@ -76,8 +89,8 @@ export function planDeckScan(deck, cards, entries, scanned, sources = new Map())
     }
   }
   function change(kind, scryfallId, section, from, to) {
-    // A commander you didn't scan is more likely out of the box than out of the deck, so don't cut it by default.
-    const checked = !(section === 'commander' && to < from);
+    // In a full rescan, an unscanned commander is more likely out of the box than out of the deck.
+    const checked = !(mode === 'replace' && section === 'commander' && to < from);
     return { id: `line:${scryfallId}:${section}`, kind, card: cards.get(scryfallId), scryfallId, section, from, to, checked };
   }
 
@@ -103,11 +116,36 @@ export function planDeckScan(deck, cards, entries, scanned, sources = new Map())
     const inDeck = own.filter((e) => e.location === here);
     const loose = own.filter((e) => !isDeckLocation(e.location));
     const otherDecks = own.filter((e) => isDeckLocation(e.location) && e.location !== here);
+    const keyOf = (u) => `${u.scryfallId}:${u.finish}`;
 
-    const keptHere = take(inDeck, units, avail);
+    if (mode === 'remove') {
+      // The scanned copies are coming out: send back matching copies recorded in the deck.
+      for (const t of take(inDeck, units, avail)) returns.push({ id: `return:${t.entry.key}`, entry: t.entry, qty: t.qty });
+      for (const u of units) choices.set(keyOf(u), { kept: 0, value: null, options: [], removing: true, listed: listedQty(oracle) > 0 });
+      continue;
+    }
+
+    let keptHere;
+    if (mode === 'replace') {
+      keptHere = take(inDeck, units, avail);
+    } else {
+      // Adding: the scanned copies join the deck, up to its new size. Any beyond that are the deck's own copies
+      // (scanning the commander again, say), so nothing moves for them.
+      const inDeckQty = sum(inDeck);
+      const needed = Math.max(0, Math.min(targets.get(oracle), inDeckQty + w.total) - inDeckQty);
+      let already = w.total - needed;
+      keptHere = [];
+      for (const u of units) {
+        const n = Math.min(u.left, already);
+        if (!n) continue;
+        u.left -= n;
+        already -= n;
+        keptHere.push({ qty: n, unit: { scryfallId: u.scryfallId, finish: u.finish } });
+      }
+    }
     kept += keptHere.reduce((n, t) => n + t.qty, 0);
     for (const u of units) {
-      const key = `${u.scryfallId}:${u.finish}`;
+      const key = keyOf(u);
       const options = [];
       const looseLeft = loose.filter((e) => avail.get(e.key) > 0);
       if (looseLeft.length) options.push({ value: 'loose', qty: sum(looseLeft), locations: [...new Set(looseLeft.map((e) => e.location))] });
@@ -125,11 +163,13 @@ export function planDeckScan(deck, cards, entries, scanned, sources = new Map())
       for (const t of take(pool, [u], avail)) moves.push({ id: `move:${t.entry.key}:${key}`, entry: t.entry, qty: t.qty, fromDeck: value === 'loose' ? null : value, unit: t.unit });
     }
     for (const u of units) if (u.left > 0) adds.push({ id: `add:${u.scryfallId}:${u.finish}`, scryfallId: u.scryfallId, finish: u.finish, qty: u.left });
-    for (const e of inDeck) if (avail.get(e.key) > 0) returns.push({ id: `return:${e.key}`, entry: e, qty: avail.get(e.key) });
+    if (mode === 'replace') for (const e of inDeck) if (avail.get(e.key) > 0) returns.push({ id: `return:${e.key}`, entry: e, qty: avail.get(e.key) });
   }
-  for (const [oracle, own] of stacks) {
-    if (want.has(oracle)) continue;
-    for (const e of own) if (e.location === here) returns.push({ id: `return:${e.key}`, entry: e, qty: e.qty });
+  if (mode === 'replace') {
+    for (const [oracle, own] of stacks) {
+      if (want.has(oracle)) continue;
+      for (const e of own) if (e.location === here) returns.push({ id: `return:${e.key}`, entry: e, qty: e.qty });
+    }
   }
 
   return { lines, kept, moves, adds, returns, choices };

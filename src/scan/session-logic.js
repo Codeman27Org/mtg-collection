@@ -3,10 +3,13 @@
 export const itemKey = (scryfallId, finish) => `${scryfallId}:${finish}`;
 
 /** newDeck: { name, format } for a deck that's only created when the scan is saved. */
-export function newSession({ mode, location = '', recount = false, deckId = null, newDeck = null }) {
+export function newSession({ mode, location = '', recount = false, deckId = null, newDeck = null, deckMode = 'add' }) {
   const now = Date.now();
-  return { mode, location, recount, deckId, newDeck, items: [], log: [], createdAt: now, updatedAt: now };
+  return { mode, location, recount, deckId, newDeck, deckMode, items: [], log: [], createdAt: now, updatedAt: now };
 }
+
+/** How a deck scan changes the deck: 'add', 'remove', or 'replace'. A new deck is built from the scan. */
+export const deckModeOf = (session) => (session.newDeck ? 'replace' : (session.deckMode ?? 'add'));
 
 export const scannedCount = (session) => session.items.reduce((n, i) => n + i.qty, 0);
 
