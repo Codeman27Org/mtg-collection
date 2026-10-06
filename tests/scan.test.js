@@ -242,7 +242,7 @@ test('deck scan plans list changes and where each copy comes from', () => {
   const scanned = [
     { scryfallId: 'bolt-a', finish: 'nonfoil', qty: 2 }, // one kept, one moved (bolt-b from binder)
     { scryfallId: 'ring', finish: 'nonfoil', qty: 1 }, // kept
-    { scryfallId: 'helix', finish: 'nonfoil', qty: 2 }, // one from another deck, one new
+    { scryfallId: 'helix', finish: 'nonfoil', qty: 2 }, // only in another deck: new unless that deck is chosen
     { scryfallId: 'saga', finish: 'nonfoil', qty: 1 }, // the foil copy in the binder
     { scryfallId: 'forest', finish: 'nonfoil', qty: 3 }, // ignored
   ];
@@ -261,10 +261,22 @@ test('deck scan plans list changes and where each copy comes from', () => {
     plan.moves.map((m) => [m.entry.scryfallId, m.qty, m.fromDeck]),
     [
       ['bolt-b', 1, null],
-      ['helix', 1, 'deck:other'],
       ['saga', 1, null],
     ],
   );
-  assert.deepEqual(plan.adds.map((a) => [a.scryfallId, a.qty]), [['helix', 1]]);
+  assert.deepEqual(plan.adds.map((a) => [a.scryfallId, a.qty]), [['helix', 2]]);
   assert.deepEqual(plan.returns.map((r) => [r.entry.scryfallId, r.qty]), [['vial', 1]]);
+
+  // Each card's choices: binders when there's a loose copy, else new; other decks are offered.
+  const helix = plan.choices.get('helix:nonfoil');
+  assert.equal(helix.value, 'new');
+  assert.deepEqual(helix.options.map((o) => o.value), ['deck:other', 'new']);
+  assert.equal(plan.choices.get('bolt-a:nonfoil').value, 'loose');
+  assert.equal(plan.choices.get('bolt-a:nonfoil').kept, 1);
+  assert.deepEqual(plan.choices.get('ring:nonfoil'), { kept: 1, value: null, options: [] });
+
+  // Choosing the other deck takes its one copy; the second is still new.
+  const taken = planDeckScan(deck, cards, entries, scanned, new Map([['helix:nonfoil', 'deck:other']]));
+  assert.deepEqual(taken.moves.filter((m) => m.fromDeck).map((m) => [m.entry.scryfallId, m.qty, m.fromDeck]), [['helix', 1, 'deck:other']]);
+  assert.deepEqual(taken.adds.map((a) => [a.scryfallId, a.qty]), [['helix', 1]]);
 });

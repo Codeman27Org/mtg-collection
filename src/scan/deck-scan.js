@@ -9,17 +9,21 @@ const TRIM_ORDER = ['main', 'sideboard', 'companion', 'commander'];
 /**
  * deck: { id, lines }; cards: Map scryfallId → card (deck lines, entries, and scans);
  * entries: every owned stack; scanned: [{ scryfallId, finish, qty }].
+ * sources: Map itemKey ("scryfallId:finish") → where those copies come from: 'loose' (binders and Unsorted), 'new',
+ * or another deck's location id. Unset means 'loose' when there's a loose copy, else 'new'.
  * Basic lands are left alone, in the list and in the deck's location.
  *
  * Returns {
  *   lines: [{ id, kind: 'add' | 'more' | 'fewer' | 'remove', card, scryfallId, section, from, to, checked }],
+ *     (checked: false for an unscanned commander, which is left in the list)
  *   kept,                                    // scanned copies already recorded in the deck
  *   moves: [{ id, entry, qty, fromDeck, unit }], // copies to move in; fromDeck is set for copies in another deck
- *   adds: [{ id, scryfallId, finish, qty }],  // scanned copies the collection doesn't have yet
+ *   adds: [{ id, scryfallId, finish, qty }],  // scanned copies added to the collection as new
  *   returns: [{ id, entry, qty }],            // copies recorded in the deck that weren't scanned
+ *   choices: Map itemKey → { kept, value, options: [{ value, qty, locations? }] },
  * }
  */
-export function planDeckScan(deck, cards, entries, scanned) {
+export function planDeckScan(deck, cards, entries, scanned, sources = new Map()) {
   const here = deckLocation(deck.id);
   const oracleOf = (id) => cards.get(id)?.oracle_id;
   const tracked = (id) => {
@@ -90,17 +94,36 @@ export function planDeckScan(deck, cards, entries, scanned) {
   const moves = [];
   const adds = [];
   const returns = [];
+  const choices = new Map();
   for (const [oracle, w] of want) {
     const own = stacks.get(oracle) ?? [];
     const units = w.units.map((u) => ({ ...u, left: u.qty }));
     const avail = new Map(own.map((e) => [e.key, e.qty]));
+    const sum = (list) => list.reduce((n, e) => n + (avail.get(e.key) ?? 0), 0);
     const inDeck = own.filter((e) => e.location === here);
     const loose = own.filter((e) => !isDeckLocation(e.location));
     const otherDecks = own.filter((e) => isDeckLocation(e.location) && e.location !== here);
 
-    kept += take(inDeck, units, avail).reduce((n, t) => n + t.qty, 0);
-    for (const t of take(loose, units, avail)) moves.push({ id: `move:${t.entry.key}`, entry: t.entry, qty: t.qty, fromDeck: null, unit: t.unit });
-    for (const t of take(otherDecks, units, avail)) moves.push({ id: `move:${t.entry.key}`, entry: t.entry, qty: t.qty, fromDeck: t.entry.location, unit: t.unit });
+    const keptHere = take(inDeck, units, avail);
+    kept += keptHere.reduce((n, t) => n + t.qty, 0);
+    for (const u of units) {
+      const key = `${u.scryfallId}:${u.finish}`;
+      const options = [];
+      const looseLeft = loose.filter((e) => avail.get(e.key) > 0);
+      if (looseLeft.length) options.push({ value: 'loose', qty: sum(looseLeft), locations: [...new Set(looseLeft.map((e) => e.location))] });
+      for (const loc of new Set(otherDecks.map((e) => e.location))) {
+        const qty = sum(otherDecks.filter((e) => e.location === loc));
+        if (qty > 0) options.push({ value: loc, qty });
+      }
+      options.push({ value: 'new', qty: Infinity });
+      const asked = sources.get(key);
+      const value = options.some((o) => o.value === asked) ? asked : looseLeft.length ? 'loose' : 'new';
+      const keptQty = keptHere.filter((t) => t.unit.scryfallId === u.scryfallId && t.unit.finish === u.finish).reduce((n, t) => n + t.qty, 0);
+      choices.set(key, { kept: keptQty, value: u.left > 0 ? value : null, options: u.left > 0 ? options : [] });
+      if (u.left <= 0 || value === 'new') continue;
+      const pool = value === 'loose' ? loose : otherDecks.filter((e) => e.location === value);
+      for (const t of take(pool, [u], avail)) moves.push({ id: `move:${t.entry.key}:${key}`, entry: t.entry, qty: t.qty, fromDeck: value === 'loose' ? null : value, unit: t.unit });
+    }
     for (const u of units) if (u.left > 0) adds.push({ id: `add:${u.scryfallId}:${u.finish}`, scryfallId: u.scryfallId, finish: u.finish, qty: u.left });
     for (const e of inDeck) if (avail.get(e.key) > 0) returns.push({ id: `return:${e.key}`, entry: e, qty: avail.get(e.key) });
   }
@@ -109,7 +132,7 @@ export function planDeckScan(deck, cards, entries, scanned) {
     for (const e of own) if (e.location === here) returns.push({ id: `return:${e.key}`, entry: e, qty: e.qty });
   }
 
-  return { lines, kept, moves, adds, returns };
+  return { lines, kept, moves, adds, returns, choices };
 }
 
 /**

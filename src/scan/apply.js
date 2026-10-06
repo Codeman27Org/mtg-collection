@@ -41,29 +41,21 @@ export async function planDeckSave(session) {
   const entries = await collection.entries();
   const ids = [...decks.activeIds(deck), ...entries.map((e) => e.scryfallId), ...session.items.map((i) => i.scryfallId)];
   const cards = await getCards(ids);
-  return { deck, cards, ...planDeckScan(deck, cards, entries, scannedOf(session)) };
+  const sources = new Map(session.items.filter((i) => i.source).map((i) => [i.key, i.source]));
+  return { deck, cards, ...planDeckScan(deck, cards, entries, scannedOf(session), sources) };
 }
 
-/**
- * Applies a deck plan. skip: Set of change ids left unchecked; asNew: Set of move ids (copies in other decks)
- * to record as new copies instead of taking them from that deck. Returns the deck (created now if it's new).
- */
-export async function saveDeckScan(plan, { skip, asNew }) {
+/** Applies a deck plan. An unscanned commander stays in the list. Returns the deck (created now if it's new). */
+export async function saveDeckScan(plan) {
   const deck = plan.deck.isNew ? await decks.create({ name: plan.deck.name, format: plan.deck.format }) : plan.deck;
-  const lines = plan.lines.filter((l) => !skip.has(l.id)).map((l) => ({ scryfallId: l.scryfallId, section: l.section, qty: l.to }));
+  const lines = plan.lines.filter((l) => l.checked).map((l) => ({ scryfallId: l.scryfallId, section: l.section, qty: l.to }));
   if (lines.length) await decks.setLines(deck.id, lines);
 
-  const returns = plan.returns.filter((r) => !skip.has(r.id));
-  if (returns.length) await locations.sendBack(returns);
-
-  const moves = plan.moves.filter((m) => !skip.has(m.id) && !asNew.has(m.id));
-  if (moves.length) await locations.pullIntoDeck(deck.id, moves);
+  if (plan.returns.length) await locations.sendBack(plan.returns);
+  if (plan.moves.length) await locations.pullIntoDeck(deck.id, plan.moves);
 
   const here = deckLocation(deck.id);
-  const rows = [
-    ...plan.adds.filter((a) => !skip.has(a.id)).map((a) => ({ scryfallId: a.scryfallId, finish: a.finish, qty: a.qty })),
-    ...plan.moves.filter((m) => !skip.has(m.id) && asNew.has(m.id)).map((m) => ({ ...m.unit, qty: m.qty })),
-  ].map((r) => ({ ...r, condition: 'NM', language: 'en', location: here }));
+  const rows = plan.adds.map((a) => ({ scryfallId: a.scryfallId, finish: a.finish, qty: a.qty, condition: 'NM', language: 'en', location: here }));
   if (rows.length) await collection.importRows(rows, 'merge');
   return deck;
 }

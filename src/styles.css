@@ -2210,6 +2210,11 @@ progress {
 .scan-items {
   margin-bottom: 16px;
 }
+/* Deck scans: where the copies come from, on its own line under the card. */
+.scan-source {
+  flex-basis: 100%;
+  margin: 0 0 0 58px;
+}
 .scan-changes .check {
   align-items: flex-start;
 }

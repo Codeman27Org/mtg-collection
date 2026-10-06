@@ -5,7 +5,7 @@ import * as locations from '../locations.js';
 import { getCards } from '../scryfall.js';
 import { action, toast, confirmDialog, loading, dropdown } from '../components.js';
 import { cardImage } from '../card-utils.js';
-import { locationToken, returnTarget } from '../location-logic.js';
+import { locationToken } from '../location-logic.js';
 import { saveSession, clearSession } from '../scan/session.js';
 import { setQty, replaceItem, scannedCount } from '../scan/session-logic.js';
 import { planCollectionSave, saveCollectionScan, planDeckSave, saveDeckScan } from '../scan/apply.js';
@@ -67,11 +67,6 @@ export async function renderReview(root, session, { onScanMore, onDiscard, onSav
     savePanel,
   );
 
-  // Deck choices survive re-planning; ids are stable per change.
-  const skip = new Set();
-  const asNew = new Set();
-  const seen = new Set();
-
   async function changed() {
     await saveSession(session);
     await render();
@@ -80,17 +75,58 @@ export async function renderReview(root, session, { onScanMore, onDiscard, onSav
   async function render() {
     const count = scannedCount(session);
     intro.textContent = `${plural(count, 'card')} for ${targetKind(session)}“${target}”${session.recount ? ' (recount)' : ''}. Nothing has changed yet; changes are made when you save.`;
-    const cards = await getCards(session.items.map((i) => i.scryfallId));
-    list.replaceChildren(...(session.items.length ? session.items.map((item) => itemRow(item, cards.get(item.scryfallId))) : [h('p', { class: 'muted' }, 'Nothing scanned yet.')]));
     savePanel.replaceChildren(loading('Working out changes…'));
+    const cards = await getCards(session.items.map((i) => i.scryfallId));
+    let plan = null;
+    let lookup = null;
+    let planError = null;
+    if (session.mode === 'deck' && session.items.length) {
+      try {
+        [plan, lookup] = await Promise.all([planDeckSave(session), locations.lookup()]);
+      } catch (err) {
+        planError = err;
+      }
+    }
+    list.replaceChildren(
+      ...(session.items.length
+        ? session.items.map((item) => itemRow(item, cards.get(item.scryfallId), plan && sourceControl(item, plan, lookup)))
+        : [h('p', { class: 'muted' }, 'Nothing scanned yet.')]),
+    );
     try {
-      savePanel.replaceChildren(...(session.mode === 'deck' ? await deckSave() : await collectionSave()).filter(Boolean));
+      if (planError) throw planError;
+      savePanel.replaceChildren(...(session.mode === 'deck' ? deckSave(plan) : await collectionSave()).filter(Boolean));
     } catch (err) {
       savePanel.replaceChildren(h('div', { class: 'banner banner-error' }, err.message));
     }
   }
 
-  function itemRow(item, card) {
+  /** Deck scans: where this card's copies come from (a binder, another deck, or new to the collection). */
+  function sourceControl(item, plan, lookup) {
+    const choice = plan.choices.get(item.key);
+    if (!choice) return null;
+    if (!choice.options.length) return h('p', { class: 'muted small scan-source' }, 'Already in this deck');
+    const label = (o) => {
+      if (o.value === 'new') return 'New card (add to collection)';
+      if (o.value === 'loose') return `From ${o.locations.map((l) => lookup(l).name).join(', ')} (${o.qty} there)`;
+      return `Take from ${lookup(o.value).name} (${o.qty} there)`;
+    };
+    return h(
+      'div',
+      { class: 'row wrap scan-source' },
+      choice.kept ? h('span', { class: 'muted small' }, `${choice.kept} already in this deck; the rest:`) : null,
+      dropdown(
+        choice.options.map((o) => [o.value, label(o)]),
+        choice.value,
+        action(async (v) => {
+          item.source = v;
+          await changed();
+        }),
+        { label: `Where ${item.name} comes from` },
+      ),
+    );
+  }
+
+  function itemRow(item, card, source) {
     const finishes = card?.finishes?.length ? card.finishes : [item.finish];
     const finishCtl =
       finishes.length > 1
@@ -136,6 +172,7 @@ export async function renderReview(root, session, { onScanMore, onDiscard, onSav
         },
         'Change',
       ),
+      source,
     );
   }
 
@@ -203,66 +240,32 @@ export async function renderReview(root, session, { onScanMore, onDiscard, onSav
     ];
   }
 
-  async function deckSave() {
-    const plan = await planDeckSave(session);
-    const lookup = await locations.lookup();
-    const exists = await locations.existsCheck();
-    for (const l of plan.lines) {
-      if (!seen.has(l.id) && !l.checked) skip.add(l.id);
-      seen.add(l.id);
-    }
-    const check = (id, ...label) =>
-      h(
-        'label',
-        { class: 'check' },
-        h('input', {
-          type: 'checkbox',
-          checked: !skip.has(id),
-          onchange: (e) => (e.target.checked ? skip.delete(id) : skip.add(id)),
-        }),
-        h('span', {}, ...label),
-      );
+  function deckSave(plan) {
+    if (!plan) return [h('p', { class: 'muted' }, 'Scan some cards to save.')];
+    const count = scannedCount(session);
     const section = (s) => (s === 'main' ? '' : ` (${SECTION_LABELS[s] ?? s})`);
-    const lineText = (l) => {
-      const name = l.card?.name ?? 'Unknown card';
-      if (l.kind === 'add') return `Add ${l.to} ${name}`;
-      if (l.kind === 'remove') return `Remove ${name}${section(l.section)}`;
-      return `${name}${section(l.section)}: ${l.from} → ${l.to}`;
-    };
-    const cardOf = (id) => plan.cards.get(id);
-
-    const loose = plan.moves.filter((m) => !m.fromDeck);
-    const fromDecks = plan.moves.filter((m) => m.fromDeck);
-    const physical = [
-      ...loose.map((m) => check(m.id, `Move ${m.qty} ${describe(cardOf(m.entry.scryfallId), m.entry.finish)} from ${lookup(m.entry.location).name}`)),
-      ...fromDecks.map((m) =>
-        h(
-          'div',
-          { class: 'row wrap' },
-          check(m.id, `${m.qty} ${describe(cardOf(m.entry.scryfallId), m.entry.finish)} is in ${lookup(m.entry.location).name}:`),
-          dropdown(
-            [
-              ['take', 'Take it from that deck'],
-              ['new', 'I have another copy (add it)'],
-            ],
-            asNew.has(m.id) ? 'new' : 'take',
-            (v) => (v === 'new' ? asNew.add(m.id) : asNew.delete(m.id)),
-            { label: 'Where this copy comes from' },
-          ),
-        ),
-      ),
-      ...plan.adds.map((a) => check(a.id, `Add ${a.qty} new ${describe(cardOf(a.scryfallId), a.finish)} (not in your collection yet)`)),
-      ...plan.returns.map((r) => check(r.id, `Send back ${r.qty} ${describe(cardOf(r.entry.scryfallId), r.entry.finish)} to ${lookup(returnTarget(r.entry, exists)).name} (not scanned)`)),
-    ];
+    const nameOf = (l) => `${l.card?.name ?? 'Unknown card'}${section(l.section)}`;
+    const total = (list) => list.reduce((n, x) => n + x.qty, 0);
+    const fromBinders = total(plan.moves.filter((m) => !m.fromDeck));
+    const fromDecks = total(plan.moves.filter((m) => m.fromDeck));
+    const added = total(plan.adds);
+    const parts = [
+      plan.kept && `${plan.kept} already in the deck`,
+      fromBinders && `${fromBinders} from your binders`,
+      fromDecks && `${fromDecks} from other decks`,
+      added && `${added} new to your collection`,
+    ].filter(Boolean);
+    const removed = plan.lines.filter((l) => l.checked && (l.kind === 'remove' || l.kind === 'fewer'));
+    const keptCommanders = plan.lines.filter((l) => !l.checked);
 
     return [
       h('h2', {}, plan.deck.isNew ? `Create “${plan.deck.name}”` : 'Save to deck'),
-      h('h3', {}, 'Deck list'),
-      plan.lines.length ? h('div', { class: 'stack scan-changes' }, plan.lines.map((l) => check(l.id, lineText(l)))) : h('p', { class: 'muted' }, 'The list already matches what you scanned.'),
+      h('p', {}, `The deck list will match the ${plural(count, 'card')} you scanned${parts.length ? `: ${parts.join(', ')}.` : '.'}`),
+      removed.length
+        ? h('p', { class: 'small' }, `Not scanned, so taken out of the deck: ${removed.map((l) => (l.kind === 'remove' ? nameOf(l) : `${nameOf(l)} ${l.from} → ${l.to}`)).join(', ')}. Their copies go back to where they came from.`)
+        : null,
+      keptCommanders.length ? h('p', { class: 'muted small' }, `${keptCommanders.map(nameOf).join(', ')} wasn’t scanned but stays in the deck.`) : null,
       h('p', { class: 'muted small' }, 'Basic lands are left as they are.'),
-      h('h3', {}, 'Cards'),
-      plan.kept ? h('p', {}, `${plural(plan.kept, 'scanned card is', 'scanned cards are')} already recorded in this deck.`) : null,
-      physical.length ? h('div', { class: 'stack scan-changes' }, physical) : h('p', { class: 'muted' }, 'No cards need to move.'),
       h(
         'div',
         { class: 'row end' },
@@ -271,9 +274,8 @@ export async function renderReview(root, session, { onScanMore, onDiscard, onSav
           {
             class: 'btn btn-primary',
             type: 'button',
-            disabled: !session.items.length,
             onclick: action(async () => {
-              const deck = await saveDeckScan(plan, { skip, asNew });
+              const deck = await saveDeckScan(plan);
               await clearSession();
               toast(`Saved the scan to ${deck.name}`);
               onSaved(`/decks/${deck.id}`);
