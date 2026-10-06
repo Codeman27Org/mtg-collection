@@ -246,6 +246,7 @@ export default async function scanView(root, { query }) {
           if (!key) return;
           await saveSession(session);
           armed = true;
+          lastAddedName = null;
           result.hidden = true;
           status.textContent = 'Removed the last scan.';
           update();
@@ -361,6 +362,12 @@ export default async function scanView(root, { query }) {
             return;
           }
         }
+        // The same card still sitting in view after a small nudge isn't a second copy.
+        if (auto && name === lastAddedName && !changedSinceScan) {
+          armed = false;
+          status.textContent = `${name} is still in view. Swap in the next card.`;
+          return;
+        }
         status.textContent = `Finding which printing of ${name}…`;
         const t2 = performance.now();
         const found = await identifyPrinting(source, rect, name, owned);
@@ -384,8 +391,12 @@ export default async function scanView(root, { query }) {
         const finish = finishFor(card, foil);
         addScan(session, card, finish);
         await saveSession(session);
-        lastScanSig = regionHash(source, rect);
+        // Same area the auto-scan loop compares against (the guide), not the detected card outline.
+        lastScanSig = regionHash(source, rects[0]);
         armed = false;
+        lastAddedName = name;
+        changedSinceScan = false;
+        pauseUntil = Date.now() + 400;
         if (closed) return;
         celebrate(card, finish);
         showResult(card, finish, { nameConf, printConf, sameArt: printConf == null ? 0 : found.sameArt });
@@ -419,13 +430,19 @@ export default async function scanView(root, { query }) {
     let prevSig = null;
     let steady = 0;
     let lastTry = { sig: null, at: 0 };
+    let pauseUntil = 0;
+    let lastAddedName = null;
+    // Whether the view has changed a lot (card taken away or swapped) since the last card was added.
+    let changedSinceScan = true;
     function tick() {
       if (closed) return;
       setTimeout(tick, AUTO_EVERY_MS);
       if (!auto || busy || !cam || !ocrReady || !video.videoWidth || document.hidden || document.querySelector('dialog[open]')) return;
+      if (Date.now() < pauseUntil) return;
       const sig = regionHash(video, guideInVideo());
       const moved = prevSig ? hamming(sig, prevSig) : 64;
       prevSig = sig;
+      if (lastScanSig && hamming(sig, lastScanSig) > 24) changedSinceScan = true;
       if (!armed) {
         if (lastScanSig && hamming(sig, lastScanSig) <= 14) return;
         armed = true;
